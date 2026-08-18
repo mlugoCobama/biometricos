@@ -14,7 +14,9 @@ class Kernel extends ConsoleKernel
      */
     protected $commands = [
         Commands\SyncSoporteZmEmpresasCommand::class,
+        Commands\RouteListCommand::class,
     ];
+
 
     /**
      * Define the application's command schedule.
