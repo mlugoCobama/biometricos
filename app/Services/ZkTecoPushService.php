@@ -1,0 +1,404 @@
+<?php
+
+namespace App\Services;
+
+use App\Models\AttendanceLog;
+use App\Models\Device;
+use App\Models\DeviceCommand;
+use App\Models\Employee;
+use App\Models\EmployeeFingerprint;
+use Carbon\Carbon;
+use Illuminate\Support\Facades\Log;
+
+class ZkTecoPushService
+{
+    /**
+     * Handle initial handshake / GET option request from ZKTeco device
+     */
+    public function handleHandshake(Device $device, array $queryParams): string
+    {
+        $device->update([
+            'last_heartbeat' => Carbon::now(),
+            'status' => 'online',
+            'ip_address' => $queryParams['ip'] ?? $device->ip_address,
+            'push_version' => $queryParams['pushver'] ?? $device->push_version,
+            'firmware_version' => $queryParams['language'] ?? $device->firmware_version,
+        ]);
+
+        return implode("\n", [
+            "GET OPTION FROM: SN={$device->serial_number}",
+            "Stamp=9999",
+            "OpStamp=9999",
+            "PhotoStamp=9999",
+            "ErrorDelay=60",
+            "Delay=30",
+            "TransTimes=00:00;23:59",
+            "TransInterval=1",
+            "TransFlag=1111111111",
+            "RealTime=1",
+            "Encrypt=0",
+        ]) . "\n";
+    }
+
+    /**
+     * Parse and store incoming Attendance Logs (ATTLOG)
+     */
+    public function parseAndStoreAttendanceLogs(Device $device, string $rawContent): int
+    {
+        $lines = explode("\n", trim($rawContent));
+        $count = 0;
+
+        foreach ($lines as $line) {
+            $line = trim($line);
+            if (empty($line)) {
+                continue;
+            }
+
+            // Tab-separated or space-separated format:
+            // PIN \t DateTime \t PunchState \t VerifyType \t WorkCode
+            $parts = preg_split('/\t+|\s{2,}/', $line);
+
+            if (count($parts) < 2) {
+                // Try comma separated
+                $parts = explode(',', $line);
+            }
+
+            if (count($parts) >= 2) {
+                $pin = trim($parts[0]);
+                $punchTimeStr = trim($parts[1]);
+                $punchType = isset($parts[2]) ? (int)trim($parts[2]) : 0;
+                $verifyType = isset($parts[3]) ? (int)trim($parts[3]) : 1;
+                $workCode = isset($parts[4]) ? trim($parts[4]) : null;
+
+                try {
+                    $punchTime = Carbon::parse($punchTimeStr);
+                } catch (\Exception $e) {
+                    Log::error("Failed to parse punch_time: {$punchTimeStr}");
+                    continue;
+                }
+
+                // Locate employee by company and PIN
+                $employee = Employee::where('company_id', $device->company_id)
+                    ->where('pin', $pin)
+                    ->first();
+
+                AttendanceLog::firstOrCreate(
+                    [
+                        'device_id' => $device->id,
+                        'pin' => $pin,
+                        'punch_time' => $punchTime->format('Y-m-d H:i:s'),
+                    ],
+                    [
+                        'company_id' => $device->company_id,
+                        'employee_id' => $employee?->id,
+                        'punch_type' => $punchType,
+                        'verify_type' => $verifyType,
+                        'work_code' => $workCode,
+                        'raw_line' => $line,
+                    ]
+                );
+
+                $count++;
+            }
+        }
+
+        $device->increment('att_log_count', $count);
+        $device->update([
+            'last_heartbeat' => Carbon::now(),
+            'status' => 'online',
+        ]);
+
+        return $count;
+    }
+
+    /**
+     * Parse and store User Info uploaded by device
+     */
+    public function parseAndStoreUsers(Device $device, string $rawContent): int
+    {
+        $lines = explode("\n", trim($rawContent));
+        $count = 0;
+
+        foreach ($lines as $line) {
+            $line = trim($line);
+            if (empty($line)) continue;
+
+            // Pattern formats:
+            // USER PIN=101\tName=Juan Perez\tPri=0\tPass=1234\tCard=12345
+            // or tab delimited: 101 \t Juan Perez \t 0 \t 1234 \t 12345
+            $data = $this->parseKeyValueOrTabLine($line);
+
+            $pin = $data['PIN'] ?? $data['pin'] ?? null;
+            if (!$pin && isset($data[0])) {
+                $pin = $data[0];
+            }
+
+            if ($pin) {
+                $name = $data['Name'] ?? $data['name'] ?? ($data[1] ?? "User {$pin}");
+                $privilege = isset($data['Pri']) ? (int)$data['Pri'] : (isset($data[2]) ? (int)$data[2] : 0);
+                $password = $data['Pass'] ?? $data['password'] ?? ($data[3] ?? null);
+                $card = $data['Card'] ?? $data['card'] ?? ($data[4] ?? null);
+
+                Employee::updateOrCreate(
+                    [
+                        'company_id' => $device->company_id,
+                        'pin' => (string)$pin,
+                    ],
+                    [
+                        'first_name' => $name,
+                        'privilege' => $privilege,
+                        'password' => $password,
+                        'card_number' => $card,
+                        'status' => 'active',
+                    ]
+                );
+                $count++;
+            }
+        }
+
+        $device->update([
+            'user_count' => Employee::where('company_id', $device->company_id)->count(),
+            'last_heartbeat' => Carbon::now(),
+            'status' => 'online',
+        ]);
+
+        return $count;
+    }
+
+    /**
+     * Parse and store Fingerprint Templates uploaded by device
+     */
+    public function parseAndStoreFingerprints(Device $device, string $rawContent): int
+    {
+        $lines = explode("\n", trim($rawContent));
+        $count = 0;
+
+        foreach ($lines as $line) {
+            $line = trim($line);
+            if (empty($line)) continue;
+
+            $data = $this->parseKeyValueOrTabLine($line);
+            $pin = $data['PIN'] ?? $data['pin'] ?? null;
+            $fingerIndex = isset($data['FID']) ? (int)$data['FID'] : (isset($data['finger_index']) ? (int)$data['finger_index'] : 0);
+            $templateData = $data['Tmp'] ?? $data['template'] ?? $data['Template'] ?? null;
+
+            if ($pin && $templateData) {
+                $employee = Employee::where('company_id', $device->company_id)
+                    ->where('pin', (string)$pin)
+                    ->first();
+
+                if ($employee) {
+                    EmployeeFingerprint::updateOrCreate(
+                        [
+                            'employee_id' => $employee->id,
+                            'finger_index' => $fingerIndex,
+                        ],
+                        [
+                            'template_data' => $templateData,
+                            'template_version' => (int)($data['Valid'] ?? 10),
+                            'size' => strlen($templateData),
+                            'valid' => true,
+                        ]
+                    );
+                    $count++;
+                }
+            }
+        }
+
+        $device->update([
+            'fingerprint_count' => EmployeeFingerprint::whereHas('employee', function ($q) use ($device) {
+                $q->where('company_id', $device->company_id);
+            })->count(),
+            'last_heartbeat' => Carbon::now(),
+            'status' => 'online',
+        ]);
+
+        return $count;
+    }
+
+    /**
+     * Fetch pending commands formatted for ZKTeco ADMS poll (/iclock/getrequest)
+     */
+    public function getPendingCommandsResponse(Device $device): string
+    {
+        $device->update([
+            'last_heartbeat' => Carbon::now(),
+            'status' => 'online',
+        ]);
+
+        $pendingCommands = DeviceCommand::where('device_id', $device->id)
+            ->where('status', 'pending')
+            ->orderBy('id', 'asc')
+            ->get();
+
+        if ($pendingCommands->isEmpty()) {
+            return "OK\n";
+        }
+
+        $responseLines = [];
+        foreach ($pendingCommands as $cmd) {
+            $responseLines[] = "C:{$cmd->id}:{$cmd->command_text}";
+            $cmd->update([
+                'status' => 'sent',
+                'sent_at' => Carbon::now(),
+            ]);
+        }
+
+        return implode("\n", $responseLines) . "\n";
+    }
+
+    /**
+     * Process callback response from device for executed commands (/iclock/devicecmd)
+     */
+    public function processCommandResponse(Device $device, string $content, array $queryParams): void
+    {
+        $device->update([
+            'last_heartbeat' => Carbon::now(),
+            'status' => 'online',
+        ]);
+
+        // Content format: ID=101&Return=0&CMD=DATA UPDATE USERINFO
+        parse_str($content, $parsed);
+        if (empty($parsed)) {
+            parse_str(parse_url('?' . $content, PHP_URL_QUERY) ?? '', $parsed);
+        }
+
+        $cmdId = $parsed['ID'] ?? $queryParams['ID'] ?? null;
+        $returnCode = isset($parsed['Return']) ? (int)$parsed['Return'] : (isset($queryParams['Return']) ? (int)$queryParams['Return'] : 0);
+
+        if ($cmdId) {
+            $command = DeviceCommand::where('device_id', $device->id)
+                ->where('id', $cmdId)
+                ->first();
+
+            if ($command) {
+                $command->update([
+                    'status' => ($returnCode === 0) ? 'success' : 'error',
+                    'return_code' => $returnCode,
+                    'executed_at' => Carbon::now(),
+                    'response_text' => $content,
+                ]);
+            }
+        }
+    }
+
+    /**
+     * Create command to sync employee to device
+     */
+    public function queueSyncEmployeeCommand(Device $device, Employee $employee): DeviceCommand
+    {
+        $name = $employee->full_name;
+        $pri = $employee->privilege;
+        $pass = $employee->password ?? '';
+        $card = $employee->card_number ?? '';
+
+        $cmdText = "DATA UPDATE USERINFO PIN={$employee->pin}\tName={$name}\tPri={$pri}\tPass={$pass}\tCard={$card}";
+
+        return DeviceCommand::create([
+            'device_id' => $device->id,
+            'command_type' => 'USERINFO',
+            'command_text' => $cmdText,
+            'status' => 'pending',
+        ]);
+    }
+
+    /**
+     * Create command to delete employee from device
+     */
+    public function queueDeleteEmployeeCommand(Device $device, string $pin): DeviceCommand
+    {
+        $cmdText = "DATA DELETE USERINFO PIN={$pin}";
+
+        return DeviceCommand::create([
+            'device_id' => $device->id,
+            'command_type' => 'DELETE_USER',
+            'command_text' => $cmdText,
+            'status' => 'pending',
+        ]);
+    }
+
+    /**
+     * Create command to sync fingerprint template to device
+     */
+    public function queueSyncFingerprintCommand(Device $device, Employee $employee, EmployeeFingerprint $fingerprint): DeviceCommand
+    {
+        $cmdText = "DATA UPDATE FINGERTEMPLATE PIN={$employee->pin}\tFID={$fingerprint->finger_index}\tSize={$fingerprint->size}\tValid=1\tTmp={$fingerprint->template_data}";
+
+        return DeviceCommand::create([
+            'device_id' => $device->id,
+            'command_type' => 'FINGERTEMPLATE',
+            'command_text' => $cmdText,
+            'status' => 'pending',
+        ]);
+    }
+
+    /**
+     * Create command to trigger fingerprint enrollment on device
+     */
+    public function queueEnrollFingerprintCommand(Device $device, string $pin, int $fingerIndex = 0): DeviceCommand
+    {
+        $cmdText = "ENROLL_FP PIN={$pin}\tFID={$fingerIndex}\tRETRY=3";
+
+        return DeviceCommand::create([
+            'device_id' => $device->id,
+            'command_type' => 'ENROLL_FP',
+            'command_text' => $cmdText,
+            'status' => 'pending',
+        ]);
+    }
+
+    /**
+     * Create command to query information from device
+     */
+    public function queueQueryInfoCommand(Device $device): DeviceCommand
+    {
+        $cmdText = "INFO";
+
+        return DeviceCommand::create([
+            'device_id' => $device->id,
+            'command_type' => 'INFO',
+            'command_text' => $cmdText,
+            'status' => 'pending',
+        ]);
+    }
+
+    /**
+     * Create command to reboot device
+     */
+    public function queueRebootCommand(Device $device): DeviceCommand
+    {
+        $cmdText = "REBOOT";
+
+        return DeviceCommand::create([
+            'device_id' => $device->id,
+            'command_type' => 'REBOOT',
+            'command_text' => $cmdText,
+            'status' => 'pending',
+        ]);
+    }
+
+    /**
+     * Helper to parse key-value lines or tab-separated lines
+     */
+    private function parseKeyValueOrTabLine(string $line): array
+    {
+        $result = [];
+        $line = preg_replace('/^(USER|BIODATA|OPERLOG)\s+/i', '', trim($line));
+
+        if (str_contains($line, '=')) {
+            $parts = preg_split('/\t+/', $line);
+            foreach ($parts as $part) {
+                if (str_contains($part, '=')) {
+                    [$key, $val] = explode('=', $part, 2);
+                    $result[trim($key)] = trim($val);
+                }
+            }
+        } else {
+            $parts = preg_split('/\t+/', $line);
+            foreach ($parts as $idx => $part) {
+                $result[$idx] = trim($part);
+            }
+        }
+        return $result;
+    }
+}
