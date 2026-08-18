@@ -123,12 +123,9 @@ class ZkTecoPushService
             $line = trim($line);
             if (empty($line)) continue;
 
-            // Pattern formats:
-            // USER PIN=101\tName=Juan Perez\tPri=0\tPass=1234\tCard=12345
-            // or tab delimited: 101 \t Juan Perez \t 0 \t 1234 \t 12345
             $data = $this->parseKeyValueOrTabLine($line);
 
-            $pin = $data['PIN'] ?? $data['pin'] ?? null;
+            $pin = $data['PIN'] ?? $data['pin'] ?? $data['Pin'] ?? $data['user_id'] ?? $data['uid'] ?? $data['USERID'] ?? null;
             if (!$pin && isset($data[0])) {
                 $pin = $data[0];
             }
@@ -139,25 +136,40 @@ class ZkTecoPushService
                 $password = $data['Pass'] ?? $data['password'] ?? ($data[3] ?? null);
                 $card = $data['Card'] ?? $data['card'] ?? ($data[4] ?? null);
 
-                Employee::updateOrCreate(
-                    [
-                        'company_id' => $device->company_id,
-                        'pin' => (string)$pin,
-                    ],
-                    [
-                        'first_name' => $name,
-                        'privilege' => $privilege,
-                        'password' => $password,
-                        'card_number' => $card,
-                        'status' => 'active',
-                    ]
-                );
+                $searchCriteria = ['pin' => (string)$pin];
+                if ($device->company_id) {
+                    $searchCriteria['company_id'] = $device->company_id;
+                }
+                if ($device->intercompania) {
+                    $searchCriteria['intercompania'] = $device->intercompania;
+                }
+
+                $updateData = [
+                    'first_name' => $name,
+                    'privilege' => $privilege,
+                    'password' => $password,
+                    'card_number' => $card,
+                    'status' => 'active',
+                ];
+                if ($device->company_id) {
+                    $updateData['company_id'] = $device->company_id;
+                }
+                if ($device->intercompania) {
+                    $updateData['intercompania'] = $device->intercompania;
+                }
+
+                Employee::updateOrCreate($searchCriteria, $updateData);
                 $count++;
             }
         }
 
+        $userCount = Employee::query()
+            ->when($device->company_id, fn($q) => $q->where('company_id', $device->company_id))
+            ->when($device->intercompania, fn($q) => $q->where('intercompania', $device->intercompania))
+            ->count();
+
         $device->update([
-            'user_count' => Employee::where('company_id', $device->company_id)->count(),
+            'user_count' => $userCount,
             'last_heartbeat' => Carbon::now(),
             'status' => 'online',
         ]);
@@ -178,12 +190,14 @@ class ZkTecoPushService
             if (empty($line)) continue;
 
             $data = $this->parseKeyValueOrTabLine($line);
-            $pin = $data['PIN'] ?? $data['pin'] ?? null;
+            $pin = $data['PIN'] ?? $data['pin'] ?? $data['Pin'] ?? $data['user_id'] ?? $data['uid'] ?? null;
             $fingerIndex = isset($data['FID']) ? (int)$data['FID'] : (isset($data['finger_index']) ? (int)$data['finger_index'] : 0);
             $templateData = $data['Tmp'] ?? $data['template'] ?? $data['Template'] ?? null;
 
             if ($pin && $templateData) {
-                $employee = Employee::where('company_id', $device->company_id)
+                $employee = Employee::query()
+                    ->when($device->company_id, fn($q) => $q->where('company_id', $device->company_id))
+                    ->when($device->intercompania, fn($q) => $q->where('intercompania', $device->intercompania))
                     ->where('pin', (string)$pin)
                     ->first();
 
@@ -207,7 +221,12 @@ class ZkTecoPushService
 
         $device->update([
             'fingerprint_count' => EmployeeFingerprint::whereHas('employee', function ($q) use ($device) {
-                $q->where('company_id', $device->company_id);
+                if ($device->company_id) {
+                    $q->where('company_id', $device->company_id);
+                }
+                if ($device->intercompania) {
+                    $q->where('intercompania', $device->intercompania);
+                }
             })->count(),
             'last_heartbeat' => Carbon::now(),
             'status' => 'online',
@@ -387,10 +406,17 @@ class ZkTecoPushService
 
         if (str_contains($line, '=')) {
             $parts = preg_split('/\t+/', $line);
-            foreach ($parts as $part) {
-                if (str_contains($part, '=')) {
-                    [$key, $val] = explode('=', $part, 2);
-                    $result[trim($key)] = trim($val);
+            if (count($parts) === 1 && str_contains($line, ' ')) {
+                preg_match_all('/([a-zA-Z_]+)=([^\s]*)/', $line, $matches, PREG_SET_ORDER);
+                foreach ($matches as $m) {
+                    $result[trim($m[1])] = trim($m[2]);
+                }
+            } else {
+                foreach ($parts as $part) {
+                    if (str_contains($part, '=')) {
+                        [$key, $val] = explode('=', $part, 2);
+                        $result[trim($key)] = trim($val);
+                    }
                 }
             }
         } else {

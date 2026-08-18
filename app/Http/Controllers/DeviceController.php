@@ -127,7 +127,7 @@ class DeviceController extends Controller
         }
 
         $this->validate($request, [
-            'type' => 'required|string|in:reboot,info,query_users,clear_logs,custom',
+            'type' => 'required|string|in:reboot,info,query_users,query_fingerprints,query_all,clear_logs,custom',
             'custom_command' => 'required_if:type,custom|string',
         ]);
 
@@ -146,6 +146,28 @@ class DeviceController extends Controller
                     'device_id' => $device->id,
                     'command_type' => 'QUERY_USERS',
                     'command_text' => 'DATA QUERY USERINFO',
+                    'status' => 'pending',
+                ]);
+                break;
+            case 'query_fingerprints':
+                $command = DeviceCommand::create([
+                    'device_id' => $device->id,
+                    'command_type' => 'QUERY_FINGERPRINTS',
+                    'command_text' => 'DATA QUERY FINGERTEMPLATE',
+                    'status' => 'pending',
+                ]);
+                break;
+            case 'query_all':
+                DeviceCommand::create([
+                    'device_id' => $device->id,
+                    'command_type' => 'QUERY_USERS',
+                    'command_text' => 'DATA QUERY USERINFO',
+                    'status' => 'pending',
+                ]);
+                $command = DeviceCommand::create([
+                    'device_id' => $device->id,
+                    'command_type' => 'QUERY_FINGERPRINTS',
+                    'command_text' => 'DATA QUERY FINGERTEMPLATE',
                     'status' => 'pending',
                 ]);
                 break;

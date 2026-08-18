@@ -53,21 +53,39 @@ class ZkTecoPushController extends Controller
         $device = $this->resolveOrCreateDevice($sn, $request);
         $rawContent = $request->getContent();
 
+        \Illuminate\Support\Facades\Log::info("ZKTeco cdataPost received", [
+            'sn' => $sn,
+            'table' => $table,
+            'bytes' => strlen($rawContent),
+            'content_preview' => substr($rawContent, 0, 200)
+        ]);
+
         $processed = 0;
 
         switch ($table) {
             case 'ATTLOG':
+            case 'ATT_LOG':
+            case 'ATTENDANCE':
                 $processed = $this->pushService->parseAndStoreAttendanceLogs($device, $rawContent);
                 break;
             case 'USERINFO':
+            case 'USER':
+            case 'USERS':
+            case 'USER_INFO':
                 $processed = $this->pushService->parseAndStoreUsers($device, $rawContent);
                 break;
             case 'FINGERTEMPLATE':
             case 'BIODATA':
+            case 'TEMPLATE':
+            case 'TEMPLATES':
+            case 'FP_TEMPLATE':
                 $processed = $this->pushService->parseAndStoreFingerprints($device, $rawContent);
                 break;
             default:
-                // Log operation or ignore unrecognized table
+                \Illuminate\Support\Facades\Log::warning("ZKTeco unhandled table type: {$table}", [
+                    'sn' => $sn,
+                    'content' => $rawContent
+                ]);
                 break;
         }
 
