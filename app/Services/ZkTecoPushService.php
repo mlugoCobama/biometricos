@@ -133,7 +133,7 @@ class ZkTecoPushService
             if ($pin) {
                 $name = $data['Name'] ?? $data['name'] ?? ($data[1] ?? "User {$pin}");
                 $privilege = isset($data['Pri']) ? (int)$data['Pri'] : (isset($data[2]) ? (int)$data[2] : 0);
-                $password = $data['Pass'] ?? $data['password'] ?? ($data[3] ?? null);
+                $password = $data['Passwd'] ?? $data['Pass'] ?? $data['password'] ?? ($data[3] ?? null);
                 $card = $data['Card'] ?? $data['card'] ?? ($data[4] ?? null);
 
                 $searchCriteria = ['pin' => (string)$pin];
@@ -402,7 +402,7 @@ class ZkTecoPushService
     private function parseKeyValueOrTabLine(string $line): array
     {
         $result = [];
-        $line = preg_replace('/^(USER|BIODATA|OPERLOG)\s+/i', '', trim($line));
+        $line = preg_replace('/^(USER|BIODATA|OPERLOG|OPLOG|OPER_LOG)\s+/i', '', trim($line));
 
         if (str_contains($line, '=')) {
             $parts = preg_split('/\t+/', $line);

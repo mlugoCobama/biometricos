@@ -220,4 +220,26 @@ class ZkTecoPushTest extends TestCase
         $this->assertEquals(1, DeviceCommand::where('device_id', $device1->id)->where('command_type', 'USERINFO')->count());
         $this->assertEquals(0, DeviceCommand::where('device_id', $device2->id)->where('command_type', 'USERINFO')->count());
     }
+
+    public function test_push_operlog_userinfo_cdata_post()
+    {
+        $this->get('/iclock/cdata?SN=UFS2252603014');
+        $device = Device::where('serial_number', 'UFS2252603014')->first();
+
+        $operlogPayload = "USER PIN=1\tName=Admin\tPri=14\tPasswd=159753\tCard=\tGrp=1\tTZ=0000000000000000\n" .
+            "USER PIN=2500100372\tName=ALCANTARA GARCIA HECTOR DANIEL\tPri=0\tPasswd=\tCard=\tGrp=1\tTZ=0000000100000000\n";
+
+        $response = $this->call('POST', '/iclock/cdata?SN=UFS2252603014&table=OPERLOG', [], [], [], [], $operlogPayload);
+
+        $this->assertEquals(200, $response->getStatusCode());
+        $this->assertStringContainsString('OK: 2', $response->getContent());
+
+        $emp1 = Employee::where('company_id', $device->company_id)->where('pin', '1')->first();
+        $this->assertNotNull($emp1);
+        $this->assertEquals('Admin', $emp1->first_name);
+
+        $emp2 = Employee::where('company_id', $device->company_id)->where('pin', '2500100372')->first();
+        $this->assertNotNull($emp2);
+        $this->assertEquals('ALCANTARA GARCIA HECTOR DANIEL', $emp2->first_name);
+    }
 }

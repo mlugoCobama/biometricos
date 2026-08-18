@@ -81,11 +81,29 @@ class ZkTecoPushController extends Controller
             case 'FP_TEMPLATE':
                 $processed = $this->pushService->parseAndStoreFingerprints($device, $rawContent);
                 break;
+            case 'OPERLOG':
+            case 'OPLOG':
+            case 'OPER_LOG':
+                if (str_contains($rawContent, 'USER PIN=') || str_contains($rawContent, 'PIN=')) {
+                    $processed += $this->pushService->parseAndStoreUsers($device, $rawContent);
+                }
+                if (str_contains($rawContent, 'BIODATA') || str_contains($rawContent, 'Tmp=')) {
+                    $processed += $this->pushService->parseAndStoreFingerprints($device, $rawContent);
+                }
+                break;
             default:
-                \Illuminate\Support\Facades\Log::warning("ZKTeco unhandled table type: {$table}", [
-                    'sn' => $sn,
-                    'content' => $rawContent
-                ]);
+                if (str_contains($rawContent, 'USER PIN=') || str_contains($rawContent, 'PIN=')) {
+                    $processed += $this->pushService->parseAndStoreUsers($device, $rawContent);
+                }
+                if (str_contains($rawContent, 'BIODATA') || str_contains($rawContent, 'Tmp=')) {
+                    $processed += $this->pushService->parseAndStoreFingerprints($device, $rawContent);
+                }
+                if ($processed === 0) {
+                    \Illuminate\Support\Facades\Log::warning("ZKTeco unhandled table type: {$table}", [
+                        'sn' => $sn,
+                        'content' => $rawContent
+                    ]);
+                }
                 break;
         }
 

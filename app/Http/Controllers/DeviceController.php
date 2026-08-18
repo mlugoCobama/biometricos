@@ -142,10 +142,16 @@ class DeviceController extends Controller
                 $command = $this->pushService->queueQueryInfoCommand($device);
                 break;
             case 'query_users':
-                $command = DeviceCommand::create([
+                DeviceCommand::create([
                     'device_id' => $device->id,
                     'command_type' => 'QUERY_USERS',
                     'command_text' => 'DATA QUERY USERINFO',
+                    'status' => 'pending',
+                ]);
+                $command = DeviceCommand::create([
+                    'device_id' => $device->id,
+                    'command_type' => 'QUERY_USERS',
+                    'command_text' => 'DATA QUERY USER',
                     'status' => 'pending',
                 ]);
                 break;
