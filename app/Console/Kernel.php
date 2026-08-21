@@ -15,8 +15,8 @@ class Kernel extends ConsoleKernel
     protected $commands = [
         Commands\SyncSoporteZmEmpresasCommand::class,
         Commands\RouteListCommand::class,
+        Commands\SendWeeklyAttendanceReportCommand::class,
     ];
-
 
     /**
      * Define the application's command schedule.
@@ -26,6 +26,7 @@ class Kernel extends ConsoleKernel
      */
     protected function schedule(Schedule $schedule)
     {
-        //
+        // Ejecutar reporte semanal automáticamente cada Lunes a las 08:00 AM
+        $schedule->command('attendance:weekly-report --week=previous --format=all')->weeklyOn(1, '08:00');
     }
 }

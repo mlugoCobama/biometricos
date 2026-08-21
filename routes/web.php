@@ -79,3 +79,12 @@ $router->group(['prefix' => 'api/v1'], function ($router) {
     $router->get('/attendance-logs', 'AttendanceLogController@index');
     $router->get('/attendance-logs/stats', 'AttendanceLogController@stats');
 });
+
+/*
+|--------------------------------------------------------------------------
+| Global OPTIONS Catch-All for CORS Preflight Requests
+|--------------------------------------------------------------------------
+*/
+$router->options('/{any:.*}', function () {
+    return response('', 200);
+});

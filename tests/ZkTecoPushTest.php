@@ -242,4 +242,46 @@ class ZkTecoPushTest extends TestCase
         $this->assertNotNull($emp2);
         $this->assertEquals('ALCANTARA GARCIA HECTOR DANIEL', $emp2->first_name);
     }
+
+    public function test_weekly_attendance_report_command()
+    {
+        $company = Company::create(['name' => 'Empresa Reporte', 'code' => 'EMP_REP']);
+        $device = Device::create([
+            'company_id' => $company->id,
+            'name' => 'Biométrico Principal',
+            'serial_number' => 'SN_REP_001',
+        ]);
+        $emp = Employee::create([
+            'company_id' => $company->id,
+            'pin' => '5001',
+            'first_name' => 'Juan',
+            'last_name' => 'Perez',
+        ]);
+
+        $today = \Carbon\Carbon::now()->format('Y-m-d');
+        AttendanceLog::create(['company_id' => $company->id, 'device_id' => $device->id, 'employee_id' => $emp->id, 'pin' => '5001', 'punch_time' => "{$today} 08:00:00", 'punch_type' => 0]);
+        AttendanceLog::create(['company_id' => $company->id, 'device_id' => $device->id, 'employee_id' => $emp->id, 'pin' => '5001', 'punch_time' => "{$today} 13:00:00", 'punch_type' => 2]);
+        AttendanceLog::create(['company_id' => $company->id, 'device_id' => $device->id, 'employee_id' => $emp->id, 'pin' => '5001', 'punch_time' => "{$today} 14:00:00", 'punch_type' => 3]);
+        AttendanceLog::create(['company_id' => $company->id, 'device_id' => $device->id, 'employee_id' => $emp->id, 'pin' => '5001', 'punch_time' => "{$today} 17:00:00", 'punch_type' => 1]);
+
+        $exitCode = \Illuminate\Support\Facades\Artisan::call('attendance:weekly-report', [
+            '--company_id' => $company->id,
+            '--week' => 'current',
+            '--format' => 'all',
+        ]);
+
+        $this->assertEquals(0, $exitCode);
+    }
+
+    public function test_cors_preflight_options_request()
+    {
+        $response = $this->call('OPTIONS', '/api/v1/devices', [], [], [], [
+            'HTTP_ORIGIN' => 'http://localhost:4200',
+            'HTTP_ACCESS_CONTROL_REQUEST_METHOD' => 'GET',
+        ]);
+
+        $this->assertEquals(200, $response->getStatusCode());
+        $this->assertEquals('*', $response->headers->get('Access-Control-Allow-Origin'));
+        $this->assertStringContainsString('GET', $response->headers->get('Access-Control-Allow-Methods'));
+    }
 }
