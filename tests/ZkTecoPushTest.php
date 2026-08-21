@@ -284,4 +284,25 @@ class ZkTecoPushTest extends TestCase
         $this->assertEquals('*', $response->headers->get('Access-Control-Allow-Origin'));
         $this->assertStringContainsString('GET', $response->headers->get('Access-Control-Allow-Methods'));
     }
+
+    public function test_get_employees_by_company_and_intercompania_routes()
+    {
+        $company = Company::create(['name' => 'Empresa Test RUTA', 'code' => 'INT_TEST_99', 'intercompania' => 'INT_TEST_99']);
+        Employee::create(['company_id' => $company->id, 'intercompania' => 'INT_TEST_99', 'pin' => '9001', 'first_name' => 'Empleado A']);
+        Employee::create(['company_id' => $company->id, 'intercompania' => 'INT_TEST_99', 'pin' => '9002', 'first_name' => 'Empleado B']);
+
+        // Test GET /api/v1/companies/{id}/employees
+        $response1 = $this->get("/api/v1/companies/{$company->id}/employees?all=1");
+        $response1->assertResponseStatus(200);
+        $json1 = json_decode($response1->response->getContent(), true);
+        $this->assertTrue($json1['success']);
+        $this->assertEquals(2, $json1['total']);
+
+        // Test GET /api/v1/companies/intercompania/{intercompania}/employees
+        $response2 = $this->get("/api/v1/companies/intercompania/INT_TEST_99/employees?all=1");
+        $response2->assertResponseStatus(200);
+        $json2 = json_decode($response2->response->getContent(), true);
+        $this->assertTrue($json2['success']);
+        $this->assertEquals(2, $json2['total']);
+    }
 }

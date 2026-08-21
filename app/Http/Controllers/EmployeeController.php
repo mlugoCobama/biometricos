@@ -22,7 +22,27 @@ class EmployeeController extends Controller
         $query = Employee::with(['company'])->withCount('fingerprints');
 
         if ($request->has('company_id')) {
-            $query->where('company_id', $request->input('company_id'));
+            $companyId = $request->input('company_id');
+            $query->where(function ($q) use ($companyId) {
+                $q->where('company_id', $companyId)
+                  ->orWhere('intercompania', (string)$companyId)
+                  ->orWhereHas('company', function ($c) use ($companyId) {
+                      $c->where('id', $companyId)
+                        ->orWhere('code', (string)$companyId)
+                        ->orWhere('intercompania', (string)$companyId);
+                  });
+            });
+        }
+
+        if ($request->has('intercompania')) {
+            $intercompania = $request->input('intercompania');
+            $query->where(function ($q) use ($intercompania) {
+                $q->where('intercompania', (string)$intercompania)
+                  ->orWhereHas('company', function ($c) use ($intercompania) {
+                      $c->where('code', (string)$intercompania)
+                        ->orWhere('intercompania', (string)$intercompania);
+                  });
+            });
         }
 
         if ($request->has('search')) {
@@ -35,7 +55,100 @@ class EmployeeController extends Controller
             });
         }
 
-        $employees = $query->paginate($request->input('per_page', 15));
+        if ($request->boolean('all')) {
+            $employees = $query->orderBy('pin', 'asc')->get();
+            return response()->json([
+                'success' => true,
+                'total' => count($employees),
+                'data' => $employees
+            ]);
+        }
+
+        $employees = $query->orderBy('pin', 'asc')->paginate($request->input('per_page', 15));
+
+        return response()->json([
+            'success' => true,
+            'data' => $employees
+        ]);
+    }
+
+    /**
+     * Obtener empleados pertenecientes a una empresa por ID de empresa o número de intercompañía
+     */
+    public function getByCompany($id, Request $request)
+    {
+        $query = Employee::with(['company'])->withCount('fingerprints')
+            ->where(function ($q) use ($id) {
+                $q->where('company_id', $id)
+                  ->orWhere('intercompania', (string)$id)
+                  ->orWhereHas('company', function ($c) use ($id) {
+                      $c->where('id', $id)
+                        ->orWhere('code', (string)$id)
+                        ->orWhere('intercompania', (string)$id);
+                  });
+            });
+
+        if ($request->has('search')) {
+            $search = $request->input('search');
+            $query->where(function ($q) use ($search) {
+                $q->where('first_name', 'like', "%{$search}%")
+                  ->orWhere('last_name', 'like', "%{$search}%")
+                  ->orWhere('pin', 'like', "%{$search}%")
+                  ->orWhere('document_number', 'like', "%{$search}%");
+            });
+        }
+
+        if ($request->boolean('all')) {
+            $employees = $query->orderBy('pin', 'asc')->get();
+            return response()->json([
+                'success' => true,
+                'total' => count($employees),
+                'data' => $employees
+            ]);
+        }
+
+        $employees = $query->orderBy('pin', 'asc')->paginate($request->input('per_page', 15));
+
+        return response()->json([
+            'success' => true,
+            'data' => $employees
+        ]);
+    }
+
+    /**
+     * Obtener empleados pertenecientes a una empresa por número o código de intercompañía
+     */
+    public function getByIntercompania($intercompania, Request $request)
+    {
+        $query = Employee::with(['company'])->withCount('fingerprints')
+            ->where(function ($q) use ($intercompania) {
+                $q->where('intercompania', (string)$intercompania)
+                  ->orWhereHas('company', function ($c) use ($intercompania) {
+                      $c->where('code', (string)$intercompania)
+                        ->orWhere('intercompania', (string)$intercompania);
+                  });
+            });
+
+        if ($request->has('search')) {
+            $search = $request->input('search');
+            $query->where(function ($q) use ($search) {
+                $q->where('first_name', 'like', "%{$search}%")
+                  ->orWhere('last_name', 'like', "%{$search}%")
+                  ->orWhere('pin', 'like', "%{$search}%")
+                  ->orWhere('document_number', 'like', "%{$search}%");
+            });
+        }
+
+        if ($request->boolean('all')) {
+            $employees = $query->orderBy('pin', 'asc')->get();
+            return response()->json([
+                'success' => true,
+                'total' => count($employees),
+                'data' => $employees
+            ]);
+        }
+
+        $employees = $query->orderBy('pin', 'asc')->paginate($request->input('per_page', 15));
 
         return response()->json([
             'success' => true,

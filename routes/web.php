@@ -49,8 +49,10 @@ $router->group(['prefix' => 'api/v1'], function ($router) {
     $router->get('/companies/soportezm', 'CompanyController@getSoporteZmCompanies');
     $router->get('/companies/reports/biometrics', 'CompanyController@getBiometricsReport');
     $router->get('/companies/intercompania/{intercompania}/biometrics', 'CompanyController@getBiometricsByIntercompania');
+    $router->get('/companies/intercompania/{intercompania}/employees', 'EmployeeController@getByIntercompania');
 
     $router->get('/companies/{id}', 'CompanyController@show');
+    $router->get('/companies/{id}/employees', 'EmployeeController@getByCompany');
     $router->put('/companies/{id}', 'CompanyController@update');
     $router->delete('/companies/{id}', 'CompanyController@destroy');
 
