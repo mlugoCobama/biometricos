@@ -16,6 +16,7 @@ class Kernel extends ConsoleKernel
         Commands\SyncSoporteZmEmpresasCommand::class,
         Commands\RouteListCommand::class,
         Commands\SendWeeklyAttendanceReportCommand::class,
+        Commands\SendQuincenalAttendanceReportCommand::class,
     ];
 
     /**
@@ -28,5 +29,8 @@ class Kernel extends ConsoleKernel
     {
         // Ejecutar reporte semanal automáticamente cada Lunes a las 08:00 AM
         $schedule->command('attendance:weekly-report --week=previous --format=all')->weeklyOn(1, '08:00');
+
+        // Ejecutar reporte quincenal por las noches a las 23:59 PM (acumulado al día actual)
+        $schedule->command('attendance:quincenal-report --period=current_quincena --format=all')->dailyAt('23:59');
     }
 }

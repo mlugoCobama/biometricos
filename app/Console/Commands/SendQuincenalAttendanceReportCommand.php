@@ -11,18 +11,18 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
 use Exception;
 
-class SendWeeklyAttendanceReportCommand extends Command
+class SendQuincenalAttendanceReportCommand extends Command
 {
     /**
      * The name and signature of the console command.
      *
      * @var string
      */
-    protected $signature = 'attendance:weekly-report
+    protected $signature = 'attendance:quincenal-report
                             {--company_id= : ID de la empresa a filtrar}
                             {--intercompania= : Código de intercompañía a filtrar}
                             {--email= : Correo electrónico destino}
-                            {--week=previous : Semana a generar (previous, current, o YYYY-MM-DD)}
+                            {--period=current_quincena : Periodo quincenal (current_quincena, previous_quincena, YYYY-MM-Q1, YYYY-MM-Q2)}
                             {--format=all : Formato de salida (table, html, csv, all)}
                             {--schedule_entry=08:00 : Hora oficial de entrada (HH:MM)}
                             {--tolerance=15 : Minutos de tolerancia para retardo}
@@ -33,7 +33,7 @@ class SendWeeklyAttendanceReportCommand extends Command
      *
      * @var string
      */
-    protected $description = 'Genera y envía reporte semanal de asistencia por empresa contemplando 4 marcaciones, tiempo laborado (sin comida) y retardos con 15 min de tolerancia.';
+    protected $description = 'Genera y envía reporte quincenal de asistencia por empresa contemplando 4 marcaciones, tiempo laborado (sin comida), retardos y acumulación al día actual.';
 
     /**
      * Execute the console command.
@@ -43,13 +43,13 @@ class SendWeeklyAttendanceReportCommand extends Command
     public function handle(): int
     {
         $this->info('===========================================================');
-        $this->info('  REPORTE SEMANAL (4 MARCACIONES + TIEMPO LABORADO + RETARDOS) ');
+        $this->info('   REPORTE QUINCENAL DE ASISTENCIA POR EMPRESA (HTML/EMAIL)');
         $this->info('===========================================================');
 
         try {
-            // 1. Determinar rango de fechas de la semana (Lunes a Domingo)
-            [$startDate, $endDate, $weekLabel] = $this->resolveDateRange();
-            $this->info("Periodo evaluado: {$startDate->format('Y-m-d')} al {$endDate->format('Y-m-d')} ({$weekLabel})");
+            // 1. Determinar rango de fechas quincenal (1 al 15 o 16 al fin de mes, acumulado al día de hoy)
+            [$startDate, $endDate, $periodLabel] = $this->resolveQuincenalDateRange();
+            $this->info("Periodo evaluado: {$startDate->format('Y-m-d')} al {$endDate->format('Y-m-d')} ({$periodLabel})");
 
             // 2. Obtener lista de empresas/intercompañías a procesar
             $companies = $this->resolveCompanies();
@@ -88,8 +88,8 @@ class SendWeeklyAttendanceReportCommand extends Command
                     continue;
                 }
 
-                // Estructurar reporte semanal para cada empleado
-                $reportData = $this->buildCompanyWeeklyReport($company, $employees, $startDate, $endDate, $scheduleEntry, $tolerance);
+                // Estructurar reporte quincenal para cada empleado
+                $reportData = $this->buildCompanyQuincenalReport($company, $employees, $startDate, $endDate, $scheduleEntry, $tolerance);
 
                 // Imprimir en consola si aplica
                 if (in_array($format, ['table', 'all'])) {
@@ -107,49 +107,86 @@ class SendWeeklyAttendanceReportCommand extends Command
                 $htmlFile = null;
                 $htmlContent = null;
                 if (in_array($format, ['html', 'all'])) {
-                    [$htmlFile, $htmlContent] = $this->generateHtmlReport($company, $reportData, $startDate, $endDate, $outputDir, $scheduleEntry, $tolerance);
+                    [$htmlFile, $htmlContent] = $this->generateHtmlReport($company, $reportData, $startDate, $endDate, $outputDir, $scheduleEntry, $tolerance, $periodLabel);
                     $this->info("  ✓ Archivo HTML generado: {$htmlFile}");
                 }
 
                 // Enviar correo si está configurado
                 if ($email) {
-                    $this->sendReportEmail($email, $company, $startDate, $endDate, $htmlContent, $csvFile);
+                    $this->sendReportEmail($email, $company, $startDate, $endDate, $htmlContent, $csvFile, $periodLabel);
                     $this->info("  ✓ Reporte enviado por correo a: {$email}");
                 }
             }
 
             $this->info("\n===========================================================");
-            $this->info('✓ Proceso de generación de reporte finalizado con éxito.');
+            $this->info('✓ Proceso de generación de reporte quincenal finalizado.');
             $this->info('===========================================================');
 
             return Command::SUCCESS;
         } catch (Exception $e) {
-            $this->error('✘ Error al generar reporte de asistencia: ' . $e->getMessage());
-            Log::error('Attendance report command error', ['exception' => $e]);
+            $this->error('✘ Error al generar reporte quincenal de asistencia: ' . $e->getMessage());
+            Log::error('Quincenal attendance report command error', ['exception' => $e]);
             return Command::FAILURE;
         }
     }
 
     /**
-     * Resuelve el rango de fechas (Lunes a Domingo) según opción --week
+     * Resuelve el rango de fechas de la quincena (1 al 15 o 16 al fin de mes, hasta el día de hoy)
      */
-    private function resolveDateRange(): array
+    private function resolveQuincenalDateRange(): array
     {
-        $weekOpt = $this->option('week') ?: 'previous';
+        $periodOpt = $this->option('period') ?: 'current_quincena';
+        $now = Carbon::now();
 
-        if ($weekOpt === 'current') {
-            $startDate = Carbon::now()->startOfWeek(Carbon::MONDAY);
-            $endDate = Carbon::now()->endOfWeek(Carbon::SUNDAY);
-            $label = "Semana Actual";
-        } elseif ($weekOpt === 'previous') {
-            $startDate = Carbon::now()->subWeek()->startOfWeek(Carbon::MONDAY);
-            $endDate = Carbon::now()->subWeek()->endOfWeek(Carbon::SUNDAY);
-            $label = "Semana Anterior";
+        if ($periodOpt === 'current_quincena') {
+            if ($now->day <= 15) {
+                $startDate = $now->copy()->startOfMonth();
+                $endDate = $now->copy()->endOfDay();
+                $label = "1ra Quincena de " . $this->getSpanishMonthName($now->month) . " {$now->year} (al día de hoy)";
+            } else {
+                $startDate = $now->copy()->setDay(16)->startOfDay();
+                $endDate = $now->copy()->endOfDay();
+                $label = "2da Quincena de " . $this->getSpanishMonthName($now->month) . " {$now->year} (al día de hoy)";
+            }
+        } elseif ($periodOpt === 'previous_quincena') {
+            if ($now->day <= 15) {
+                // Quincena anterior es la 2da quincena del mes pasado
+                $prevMonth = $now->copy()->subMonth();
+                $startDate = $prevMonth->copy()->setDay(16)->startOfDay();
+                $endDate = $prevMonth->copy()->endOfMonth()->endOfDay();
+                $label = "2da Quincena de " . $this->getSpanishMonthName($prevMonth->month) . " {$prevMonth->year}";
+            } else {
+                // Quincena anterior es la 1ra quincena del mes actual
+                $startDate = $now->copy()->startOfMonth();
+                $endDate = $now->copy()->setDay(15)->endOfDay();
+                $label = "1ra Quincena de " . $this->getSpanishMonthName($now->month) . " {$now->year}";
+            }
+        } elseif (preg_match('/^(\d{4})-(\d{2})-(Q1|Q2)$/i', $periodOpt, $matches)) {
+            $year = (int)$matches[1];
+            $month = (int)$matches[2];
+            $q = strtoupper($matches[3]);
+
+            if ($q === 'Q1') {
+                $startDate = Carbon::createFromDate($year, $month, 1)->startOfDay();
+                $endDate = Carbon::createFromDate($year, $month, 15)->endOfDay();
+                $label = "1ra Quincena de " . $this->getSpanishMonthName($month) . " {$year}";
+            } else {
+                $startDate = Carbon::createFromDate($year, $month, 16)->startOfDay();
+                $endDate = Carbon::createFromDate($year, $month, 1)->endOfMonth()->endOfDay();
+                $label = "2da Quincena de " . $this->getSpanishMonthName($month) . " {$year}";
+            }
         } else {
-            $date = Carbon::parse($weekOpt);
-            $startDate = $date->copy()->startOfWeek(Carbon::MONDAY);
-            $endDate = $date->copy()->endOfWeek(Carbon::SUNDAY);
-            $label = "Semana del {$startDate->format('d/m/Y')}";
+            // Asume fecha dada YYYY-MM-DD
+            $date = Carbon::parse($periodOpt);
+            if ($date->day <= 15) {
+                $startDate = $date->copy()->startOfMonth();
+                $endDate = $date->copy()->setDay(15)->endOfDay();
+                $label = "1ra Quincena de " . $this->getSpanishMonthName($date->month) . " {$date->year}";
+            } else {
+                $startDate = $date->copy()->setDay(16)->startOfDay();
+                $endDate = $date->copy()->endOfMonth()->endOfDay();
+                $label = "2da Quincena de " . $this->getSpanishMonthName($date->month) . " {$date->year}";
+            }
         }
 
         return [$startDate->startOfDay(), $endDate->endOfDay(), $label];
@@ -180,14 +217,13 @@ class SendWeeklyAttendanceReportCommand extends Command
     }
 
     /**
-     * Construye los datos del reporte semanal agrupado por empleado y por día (Lunes a Domingo)
-     * calculando tiempo laborado (excluyendo comida) y estatus de retardo.
+     * Construye los datos del reporte quincenal agrupado por empleado y por día
      */
-    private function buildCompanyWeeklyReport(Company $company, $employees, Carbon $startDate, Carbon $endDate, string $scheduleEntry, int $tolerance): array
+    private function buildCompanyQuincenalReport(Company $company, $employees, Carbon $startDate, Carbon $endDate, string $scheduleEntry, int $tolerance): array
     {
         $report = [];
 
-        // Generar lista de los 7 días de la semana
+        // Generar lista de los días del periodo quincenal
         $days = [];
         $current = $startDate->copy();
         while ($current->lte($endDate)) {
@@ -326,7 +362,7 @@ class SendWeeklyAttendanceReportCommand extends Command
     }
 
     /**
-     * Formatea segundos a HH:MM (ej. 08:30)
+     * Formatea segundos a HH:MM (ej. 85:30 hrs)
      */
     private function formatWorkedTime(int $seconds): string
     {
@@ -367,7 +403,7 @@ class SendWeeklyAttendanceReportCommand extends Command
      */
     private function generateCsvReport(Company $company, array $reportData, Carbon $startDate, Carbon $endDate, string $outputDir): string
     {
-        $filename = "reporte_asistencia_{$company->id}_" . $startDate->format('Ymd') . "_" . $endDate->format('Ymd') . ".csv";
+        $filename = "reporte_quincenal_{$company->id}_" . $startDate->format('Ymd') . "_" . $endDate->format('Ymd') . ".csv";
         $filepath = $outputDir . '/' . $filename;
 
         $fp = fopen($filepath, 'w');
@@ -375,7 +411,7 @@ class SendWeeklyAttendanceReportCommand extends Command
         // Header UTF-8 BOM para Excel
         fprintf($fp, chr(0xEF).chr(0xBB).chr(0xBF));
 
-        fputcsv($fp, ['Empresa:', $company->name, 'Periodo:', $startDate->format('Y-m-d') . ' al ' . $endDate->format('Y-m-d')]);
+        fputcsv($fp, ['Empresa:', $company->name, 'Periodo Quincenal:', $startDate->format('Y-m-d') . ' al ' . $endDate->format('Y-m-d')]);
         fputcsv($fp, []);
         fputcsv($fp, ['PIN', 'Empleado', 'Tarjeta', 'Fecha', 'Día', '1. Entrada', '2. Salida Comer', '3. Entrada Comer', '4. Salida', 'Tiempo Laborado (Sin Comida)', 'Estatus Retardo', 'Total Marcaciones']);
 
@@ -396,7 +432,7 @@ class SendWeeklyAttendanceReportCommand extends Command
                     $day['total_punches'],
                 ]);
             }
-            fputcsv($fp, ['RESUMEN SEMANAL', $emp['name'], 'Total Horas:', $emp['total_worked_formatted'], 'Total Retardos:', $emp['total_tardiness_count']]);
+            fputcsv($fp, ['RESUMEN QUINCENAL', $emp['name'], 'Total Horas:', $emp['total_worked_formatted'], 'Total Retardos:', $emp['total_tardiness_count']]);
             fputcsv($fp, []);
         }
 
@@ -405,11 +441,11 @@ class SendWeeklyAttendanceReportCommand extends Command
     }
 
     /**
-     * Genera reporte HTML estilizado
+     * Genera reporte HTML estilizado (Propuesta 1)
      */
-    private function generateHtmlReport(Company $company, array $reportData, Carbon $startDate, Carbon $endDate, string $outputDir, string $scheduleEntry, int $tolerance): array
+    private function generateHtmlReport(Company $company, array $reportData, Carbon $startDate, Carbon $endDate, string $outputDir, string $scheduleEntry, int $tolerance, string $periodLabel): array
     {
-        $filename = "reporte_asistencia_{$company->id}_" . $startDate->format('Ymd') . "_" . $endDate->format('Ymd') . ".html";
+        $filename = "reporte_quincenal_{$company->id}_" . $startDate->format('Ymd') . "_" . $endDate->format('Ymd') . ".html";
         $filepath = $outputDir . '/' . $filename;
 
         $startDateStr = $startDate->format('d/m/Y');
@@ -461,7 +497,7 @@ class SendWeeklyAttendanceReportCommand extends Command
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <title>Reporte Semanal de Asistencia - {$company->name}</title>
+    <title>Reporte Quincenal de Asistencia - {$company->name}</title>
     <style>
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f6f9; margin: 0; padding: 20px; color: #333; }
         .container { max-width: 1250px; margin: 0 auto; background: #fff; padding: 25px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.08); }
@@ -496,13 +532,13 @@ class SendWeeklyAttendanceReportCommand extends Command
     <div class="container">
         <div class="header">
             <div>
-                <h2>Reporte Semanal de Asistencia</h2>
-                <p>Empresa: <strong>{$company->name}</strong> | Periodo: <strong>{$startDateStr} al {$endDateStr}</strong></p>
+                <h2>Reporte Quincenal de Asistencia</h2>
+                <p>Empresa: <strong>{$company->name}</strong> | Periodo: <strong>{$periodLabel} ({$startDateStr} al {$endDateStr})</strong></p>
             </div>
         </div>
 
         <div class="config-info">
-            ⏱ <strong>Criterios de Evaluación:</strong> Hora Oficial de Entrada: <strong>{$scheduleEntry} AM</strong> | Tolerancia de Retardo: <strong>{$tolerance} minutos</strong> (Tolerante hasta {$scheduleEntry} + {$tolerance}m) | Tiempo Laborado excluye lapso de comida.
+            ⏱ <strong>Criterios de Evaluación Quincenal:</strong> Hora Oficial de Entrada: <strong>{$scheduleEntry} AM</strong> | Tolerancia de Retardo: <strong>{$tolerance} minutos</strong> (Tolerante hasta {$scheduleEntry} + {$tolerance}m) | Tiempo Laborado excluye lapso de comida.
         </div>
 
         <table>
@@ -541,13 +577,13 @@ HTML;
     /**
      * Envía correo con el reporte adjunto o en cuerpo HTML
      */
-    private function sendReportEmail(string $email, Company $company, Carbon $startDate, Carbon $endDate, ?string $htmlContent, ?string $csvFile): void
+    private function sendReportEmail(string $email, Company $company, Carbon $startDate, Carbon $endDate, ?string $htmlContent, ?string $csvFile, string $periodLabel): void
     {
         try {
             if ($htmlContent && class_exists(Mail::class)) {
-                Mail::html($htmlContent, function ($message) use ($email, $company, $startDate, $endDate, $csvFile) {
+                Mail::html($htmlContent, function ($message) use ($email, $company, $startDate, $endDate, $csvFile, $periodLabel) {
                     $message->to($email)
-                        ->subject("Reporte Semanal de Asistencia - {$company->name} ({$startDate->format('d/m/Y')} - {$endDate->format('d/m/Y')})");
+                        ->subject("Reporte Quincenal de Asistencia - {$company->name} ({$periodLabel})");
 
                     if ($csvFile && file_exists($csvFile)) {
                         $message->attach($csvFile);
@@ -556,7 +592,7 @@ HTML;
             }
         } catch (Exception $e) {
             $this->warn("  ⚠ No se pudo enviar el correo a {$email}: " . $e->getMessage());
-            Log::warning("Failed to send weekly attendance email to {$email}", ['error' => $e->getMessage()]);
+            Log::warning("Failed to send quincenal attendance email to {$email}", ['error' => $e->getMessage()]);
         }
     }
 
@@ -575,5 +611,18 @@ HTML;
             6 => 'Sábado',
         ];
         return $days[$dayOfWeek] ?? 'Día';
+    }
+
+    /**
+     * Traduce el número de mes a español
+     */
+    private function getSpanishMonthName(int $month): string
+    {
+        $months = [
+            1 => 'Enero', 2 => 'Febrero', 3 => 'Marzo', 4 => 'Abril',
+            5 => 'Mayo', 6 => 'Junio', 7 => 'Julio', 8 => 'Agosto',
+            9 => 'Septiembre', 10 => 'Octubre', 11 => 'Noviembre', 12 => 'Diciembre'
+        ];
+        return $months[$month] ?? 'Mes';
     }
 }

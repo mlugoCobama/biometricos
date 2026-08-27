@@ -37,6 +37,7 @@ class ZkTecoPushService
             "TransFlag=1111111111",
             "RealTime=1",
             "Encrypt=0",
+            "TimeZone=-6"
         ]) . "\n";
     }
 
