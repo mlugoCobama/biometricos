@@ -409,7 +409,7 @@ class ZkTecoPushService
         return DeviceCommand::create([
             'device_id' => $device->id,
             'command_type' => 'SET_TIME',
-            'command_text' => "SET TIME {$nowStr}",
+            'command_text' => "DATA UPDATE OPTION SetTime={$nowStr}",
             'status' => 'pending',
         ]);
     }
