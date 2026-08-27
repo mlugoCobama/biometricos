@@ -127,7 +127,7 @@ class DeviceController extends Controller
         }
 
         $this->validate($request, [
-            'type' => 'required|string|in:reboot,info,query_users,query_fingerprints,query_all,clear_logs,custom',
+            'type' => 'required|string|in:reboot,info,query_users,query_fingerprints,query_all,clear_logs,sync_time,custom',
             'custom_command' => 'required_if:type,custom|string',
         ]);
 
@@ -135,6 +135,9 @@ class DeviceController extends Controller
         $command = null;
 
         switch ($type) {
+            case 'sync_time':
+                $command = $this->pushService->queueSyncTimeCommand($device);
+                break;
             case 'reboot':
                 $command = $this->pushService->queueRebootCommand($device);
                 break;

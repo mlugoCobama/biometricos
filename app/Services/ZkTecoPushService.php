@@ -17,8 +17,9 @@ class ZkTecoPushService
      */
     public function handleHandshake(Device $device, array $queryParams): string
     {
+        $now = Carbon::now();
         $device->update([
-            'last_heartbeat' => Carbon::now(),
+            'last_heartbeat' => $now,
             'status' => 'online',
             'ip_address' => $queryParams['ip'] ?? $device->ip_address,
             'push_version' => $queryParams['pushver'] ?? $device->push_version,
@@ -27,6 +28,7 @@ class ZkTecoPushService
 
         return implode("\n", [
             "GET OPTION FROM: SN={$device->serial_number}",
+            "SetTime={$now->format('Y-m-d H:i:s')}",
             "Stamp=9999",
             "OpStamp=9999",
             "PhotoStamp=9999",
@@ -395,6 +397,53 @@ class ZkTecoPushService
             'command_text' => $cmdText,
             'status' => 'pending',
         ]);
+    }
+
+    /**
+     * Create command to set/synchronize device date & time to current server time
+     */
+    public function queueSyncTimeCommand(Device $device): DeviceCommand
+    {
+        $nowStr = Carbon::now()->format('Y-m-d H:i:s');
+
+        return DeviceCommand::create([
+            'device_id' => $device->id,
+            'command_type' => 'SET_TIME',
+            'command_text' => "SET TIME {$nowStr}",
+            'status' => 'pending',
+        ]);
+    }
+
+    /**
+     * Check if device clock is desynchronized compared to server time, and queue sync command if offset > maxOffset
+     */
+    public function checkAndSyncDeviceTime(Device $device, ?string $deviceTimeStr = null, int $maxOffsetSeconds = 120): bool
+    {
+        if (empty($deviceTimeStr)) {
+            return false;
+        }
+
+        try {
+            $deviceTime = Carbon::parse($deviceTimeStr);
+            $serverTime = Carbon::now();
+            $diffSeconds = abs($serverTime->diffInSeconds($deviceTime));
+
+            if ($diffSeconds > $maxOffsetSeconds) {
+                Log::warning("Reloj del biométrico desincronizado", [
+                    'sn' => $device->serial_number,
+                    'device_time' => $deviceTime->format('Y-m-d H:i:s'),
+                    'server_time' => $serverTime->format('Y-m-d H:i:s'),
+                    'offset_seconds' => $diffSeconds
+                ]);
+
+                $this->queueSyncTimeCommand($device);
+                return true;
+            }
+        } catch (\Exception $e) {
+            Log::error("Error al validar fecha/hora del biométrico: " . $e->getMessage());
+        }
+
+        return false;
     }
 
     /**

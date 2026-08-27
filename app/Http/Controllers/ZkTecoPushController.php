@@ -31,6 +31,12 @@ class ZkTecoPushController extends Controller
 
         $device = $this->resolveOrCreateDevice($sn, $request);
 
+        // Validar si el reloj del biométrico está desfasado con respecto al servidor
+        $deviceTimeStr = $request->header('Date') ?: $request->input('push_time') ?: $request->input('time');
+        if ($deviceTimeStr) {
+            $this->pushService->checkAndSyncDeviceTime($device, $deviceTimeStr);
+        }
+
         $responseContent = $this->pushService->handleHandshake($device, $request->all());
 
         return response($responseContent, 200)
