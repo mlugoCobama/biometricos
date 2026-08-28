@@ -14,6 +14,7 @@ class Employee extends Model
         'pin',
         'first_name',
         'last_name',
+        'department',
         'document_number',
         'card_number',
         'privilege',

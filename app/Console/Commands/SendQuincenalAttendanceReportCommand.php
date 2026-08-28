@@ -236,6 +236,27 @@ class SendQuincenalAttendanceReportCommand extends Command
     {
         $report = [];
 
+        // 1. Cargar días festivos para esta empresa (o festivos globales)
+        $holidays = \App\Models\CompanyHoliday::query()
+            ->where(function ($q) use ($company) {
+                $q->whereNull('company_id')
+                  ->orWhere('company_id', $company->id);
+            })
+            ->whereBetween('holiday_date', [$startDate->format('Y-m-d'), $endDate->format('Y-m-d')])
+            ->get()
+            ->keyBy(fn($h) => $h->holiday_date->format('Y-m-d'));
+
+        // 2. Cargar horarios por departamento (globales o específicos por empresa)
+        $deptSchedules = \App\Models\CompanyDepartmentSchedule::query()
+            ->where(function ($q) use ($company) {
+                $q->whereNull('company_id')
+                  ->orWhere('company_id', $company->id);
+            })
+            ->where('is_active', true)
+            ->orderBy('company_id', 'desc') // empresa específica invalida el global
+            ->get()
+            ->keyBy(fn($s) => strtolower(trim($s->department_name)));
+
         // Generar lista de los días del periodo quincenal
         $days = [];
         $current = $startDate->copy();
@@ -249,18 +270,42 @@ class SendQuincenalAttendanceReportCommand extends Command
         }
 
         foreach ($employees as $emp) {
+            // Resolver horario personalizado por departamento del empleado si existe
+            $empDeptKey = strtolower(trim($emp->department ?? ''));
+            $empScheduleEntry = $scheduleEntry;
+            $empTolerance = $tolerance;
+
+            if ($empDeptKey && isset($deptSchedules[$empDeptKey])) {
+                $deptConfig = $deptSchedules[$empDeptKey];
+                $empScheduleEntry = substr($deptConfig->schedule_entry, 0, 5);
+                $empTolerance = $deptConfig->tolerance_minutes;
+            }
+
+            $totalAssistances = 0;
+            $totalTardiness = 0;
+            $totalAbsences = 0;
+
             $empReport = [
                 'employee_id' => $emp->id,
                 'pin' => $emp->pin,
                 'name' => $emp->full_name,
                 'card' => $emp->card_number ?? '-',
+                'department' => $emp->department ?? 'General',
+                'schedule_entry' => $empScheduleEntry,
                 'days' => [],
                 'total_worked_seconds' => 0,
                 'total_tardiness_count' => 0,
+                'total_assistances' => 0,
+                'total_tardiness' => 0,
+                'total_absences' => 0,
             ];
 
             foreach ($days as $day) {
                 $dayDate = $day['date_str'];
+                $isHoliday = isset($holidays[$dayDate]);
+                $holidayObj = $isHoliday ? $holidays[$dayDate] : null;
+                $dayCarbon = Carbon::parse($dayDate);
+                $isSunday = ($dayCarbon->dayOfWeek === 0);
 
                 // Consultar marcaciones del empleado en ese día ordenadas cronológicamente
                 $logs = AttendanceLog::query()
@@ -269,17 +314,32 @@ class SendQuincenalAttendanceReportCommand extends Command
                     ->orderBy('punch_time', 'asc')
                     ->get();
 
-                $punches = $this->map4DailyPunches($logs, $dayDate, $scheduleEntry, $tolerance);
+                $punches = $this->map4DailyPunches($logs, $dayDate, $empScheduleEntry, $empTolerance, $holidayObj, $isSunday);
 
                 $empReport['total_worked_seconds'] += $punches['worked_seconds'];
-                if ($punches['is_tardy']) {
-                    $empReport['total_tardiness_count']++;
+
+                if ($punches['total_punches'] > 0) {
+                    $totalAssistances++;
+                } elseif (!$isSunday && !$isHoliday) {
+                    $totalAbsences++;
                 }
 
-                $empReport['days'][$dayDate] = array_merge($day, $punches);
+                if ($punches['is_tardy']) {
+                    $totalTardiness++;
+                }
+
+                $empReport['days'][$dayDate] = array_merge($day, $punches, [
+                    'day_of_week' => $dayCarbon->dayOfWeek,
+                    'is_sunday' => $isSunday,
+                ]);
             }
 
+            $empReport['total_assistances'] = $totalAssistances;
+            $empReport['total_tardiness'] = $totalTardiness;
+            $empReport['total_absences'] = $totalAbsences;
+            $empReport['total_tardiness_count'] = $totalTardiness;
             $empReport['total_worked_formatted'] = $this->formatWorkedTime($empReport['total_worked_seconds']);
+
             $report[] = $empReport;
         }
 
@@ -289,20 +349,33 @@ class SendQuincenalAttendanceReportCommand extends Command
     /**
      * Mapea inteligentemente las marcaciones del día y calcula el tiempo laborado sin comida y retardo
      */
-    private function map4DailyPunches($logs, string $dayDate, string $scheduleEntry, int $tolerance): array
+    private function map4DailyPunches($logs, string $dayDate, string $scheduleEntry, int $tolerance, ?\App\Models\CompanyHoliday $holiday = null, bool $isSunday = false): array
     {
         $result = [
             'entrada' => '-',
             'salida_comer' => '-',
             'entrada_comer' => '-',
             'salida' => '-',
+            'entrada_12h' => '-',
+            'salida_comer_12h' => '-',
+            'entrada_comer_12h' => '-',
+            'salida_12h' => '-',
             'total_punches' => count($logs),
             'worked_time' => '-',
             'worked_seconds' => 0,
             'tardiness_status' => 'Sin Registro',
             'is_tardy' => false,
+            'is_holiday' => !is_null($holiday),
+            'is_sunday' => $isSunday,
+            'holiday_description' => $holiday?->description,
             'delay_minutes' => 0,
         ];
+
+        if ($holiday) {
+            $result['tardiness_status'] = "Festivo ({$holiday->description})";
+        } elseif ($isSunday) {
+            $result['tardiness_status'] = "DESCANSO";
+        }
 
         if ($logs->isEmpty()) {
             return $result;
@@ -339,7 +412,13 @@ class SendQuincenalAttendanceReportCommand extends Command
             if (count($times) > 4) $result['salida'] = end($times);
         }
 
-        // 2. Calcular Retardo
+        // Formato 12 Horas (AM/PM) para la matriz Excel/CSV (Imagen 2)
+        $result['entrada_12h'] = ($result['entrada'] !== '-') ? Carbon::parse("{$dayDate} {$result['entrada']}")->format('g:i A') : '-';
+        $result['salida_comer_12h'] = ($result['salida_comer'] !== '-') ? Carbon::parse("{$dayDate} {$result['salida_comer']}")->format('g:i A') : '-';
+        $result['entrada_comer_12h'] = ($result['entrada_comer'] !== '-') ? Carbon::parse("{$dayDate} {$result['entrada_comer']}")->format('g:i A') : '-';
+        $result['salida_12h'] = ($result['salida'] !== '-') ? Carbon::parse("{$dayDate} {$result['salida']}")->format('g:i A') : '-';
+
+        // 2. Calcular Retardo (si no es festivo ni domingo)
         if ($result['entrada'] !== '-') {
             $entryTime = Carbon::parse("{$dayDate} {$result['entrada']}");
             $officialEntry = Carbon::parse("{$dayDate} {$scheduleEntry}:00");
@@ -347,7 +426,7 @@ class SendQuincenalAttendanceReportCommand extends Command
 
             if ($entryTime->gt($maxAllowed)) {
                 $delayMinutes = $officialEntry->diffInMinutes($entryTime);
-                $result['is_tardy'] = true;
+                $result['is_tardy'] = (!$holiday && !$isSunday);
                 $result['delay_minutes'] = $delayMinutes;
                 $result['tardiness_status'] = "Retardo ({$delayMinutes} min)";
             } else {
@@ -359,12 +438,10 @@ class SendQuincenalAttendanceReportCommand extends Command
         $workedSeconds = 0;
 
         if ($result['entrada'] !== '-' && $result['salida_comer'] !== '-' && $result['entrada_comer'] !== '-' && $result['salida'] !== '-') {
-            // Caso completo (4 marcaciones)
             $morningSeconds = Carbon::parse("{$dayDate} {$result['entrada']}")->diffInSeconds(Carbon::parse("{$dayDate} {$result['salida_comer']}"));
             $afternoonSeconds = Carbon::parse("{$dayDate} {$result['entrada_comer']}")->diffInSeconds(Carbon::parse("{$dayDate} {$result['salida']}"));
             $workedSeconds = max(0, $morningSeconds + $afternoonSeconds);
         } elseif ($result['entrada'] !== '-' && $result['salida'] !== '-') {
-            // Caso parcial (Sólo Entrada y Salida final)
             $workedSeconds = max(0, Carbon::parse("{$dayDate} {$result['entrada']}")->diffInSeconds(Carbon::parse("{$dayDate} {$result['salida']}")));
         }
 
@@ -389,34 +466,29 @@ class SendQuincenalAttendanceReportCommand extends Command
      */
     private function displayConsoleTable(Company $company, array $reportData): void
     {
-        $headers = ['PIN', 'Empleado', 'Día', 'Entrada', 'Salida Comer', 'Entrada Comer', 'Salida', 'Tiempo Laborado', 'Estatus Retardo'];
+        $headers = ['PIN', 'Empleado', 'Asistencias', 'Retardos', 'Faltas', 'Horas Laboradas'];
         $rows = [];
 
         foreach ($reportData as $emp) {
-            foreach ($emp['days'] as $day) {
-                $rows[] = [
-                    $emp['pin'],
-                    $emp['name'],
-                    $day['formatted'],
-                    $day['entrada'],
-                    $day['salida_comer'],
-                    $day['entrada_comer'],
-                    $day['salida'],
-                    $day['worked_time'],
-                    $day['tardiness_status'],
-                ];
-            }
+            $rows[] = [
+                $emp['pin'],
+                $emp['name'],
+                $emp['total_assistances'],
+                $emp['total_tardiness'],
+                $emp['total_absences'],
+                $emp['total_worked_formatted'],
+            ];
         }
 
         $this->table($headers, array_slice($rows, 0, 35));
     }
 
     /**
-     * Genera archivo CSV
+     * Genera archivo CSV / Excel en formato Matriz estilo Imagen 2
      */
     private function generateCsvReport(Company $company, array $reportData, Carbon $startDate, Carbon $endDate, string $outputDir): string
     {
-        $filename = "reporte_quincenal_{$company->id}_" . $startDate->format('Ymd') . "_" . $endDate->format('Ymd') . ".csv";
+        $filename = "reporte_asistencia_{$company->id}_" . $startDate->format('Ymd') . "_" . $endDate->format('Ymd') . ".csv";
         $filepath = $outputDir . '/' . $filename;
 
         $fp = fopen($filepath, 'w');
@@ -424,29 +496,91 @@ class SendQuincenalAttendanceReportCommand extends Command
         // Header UTF-8 BOM para Excel
         fprintf($fp, chr(0xEF).chr(0xBB).chr(0xBF));
 
-        fputcsv($fp, ['Empresa:', $company->name, 'Periodo Quincenal:', $startDate->format('Y-m-d') . ' al ' . $endDate->format('Y-m-d')]);
-        fputcsv($fp, []);
-        fputcsv($fp, ['PIN', 'Empleado', 'Tarjeta', 'Fecha', 'Día', '1. Entrada', '2. Salida Comer', '3. Entrada Comer', '4. Salida', 'Tiempo Laborado (Sin Comida)', 'Estatus Retardo', 'Total Marcaciones']);
+        // Renglón 1: Título principal
+        fputcsv($fp, ['Reporte de Asistencia x Sucursal']);
 
+        // Renglón 2 y 3: Rango de fechas
+        $startDayName = $this->getSpanishDayName($startDate->dayOfWeek);
+        $endDayName = $this->getSpanishDayName($endDate->dayOfWeek);
+        $startMonthName = strtolower($this->getSpanishMonthName($startDate->month));
+        $endMonthName = strtolower($this->getSpanishMonthName($endDate->month));
+
+        $desdeStr = "{$startDayName} {$startDate->day} {$startMonthName} {$startDate->year}";
+        $hastaStr = "{$endDayName} {$endDate->day} {$endMonthName} {$endDate->year}";
+
+        fputcsv($fp, ['Desde', $desdeStr]);
+        fputcsv($fp, ['Hasta', $hastaStr]);
+        fputcsv($fp, []); // Renglón en blanco
+
+        // Extraer la lista de días únicos del reporte
+        $sampleEmp = $reportData[0] ?? null;
+        $daysList = $sampleEmp ? array_values($sampleEmp['days']) : [];
+
+        // Encabezado Renglón 5: Días del periodo
+        $headerDaysRow = ['', '', '']; // Espacios para Número, Nombre, Sucursal
+        foreach ($daysList as $d) {
+            $dayCarbon = Carbon::parse($d['date_str']);
+            $dDayName = strtolower($this->getSpanishDayName($dayCarbon->dayOfWeek));
+            $dMonthName = strtolower($this->getSpanishMonthName($dayCarbon->month));
+            $dayTitle = "{$dDayName} {$dayCarbon->day} {$dMonthName} {$dayCarbon->year}";
+
+            // Se agregan 5 columnas por cada día
+            $headerDaysRow[] = $dayTitle;
+            $headerDaysRow[] = '';
+            $headerDaysRow[] = '';
+            $headerDaysRow[] = '';
+            $headerDaysRow[] = '';
+        }
+        fputcsv($fp, $headerDaysRow);
+
+        // Encabezado Renglón 6: Subcolumnas
+        $headerSubcolsRow = ['Número', 'Nombre', 'Sucursal'];
+        foreach ($daysList as $d) {
+            $headerSubcolsRow[] = 'Entrada trabajo';
+            $headerSubcolsRow[] = 'Retardo';
+            $headerSubcolsRow[] = 'Salida a comer';
+            $headerSubcolsRow[] = 'Regreso de comida';
+            $headerSubcolsRow[] = 'Salida trabajo';
+        }
+        fputcsv($fp, $headerSubcolsRow);
+
+        // Renglones de los empleados
         foreach ($reportData as $emp) {
-            foreach ($emp['days'] as $day) {
-                fputcsv($fp, [
-                    $emp['pin'],
-                    $emp['name'],
-                    $emp['card'],
-                    $day['date_str'],
-                    $day['day_name'],
-                    $day['entrada'],
-                    $day['salida_comer'],
-                    $day['entrada_comer'],
-                    $day['salida'],
-                    $day['worked_time'],
-                    $day['tardiness_status'],
-                    $day['total_punches'],
-                ]);
+            $row = [
+                $emp['pin'],
+                $emp['name'],
+                $company->name,
+            ];
+
+            foreach ($emp['days'] as $dayDate => $day) {
+                if ($day['is_sunday']) {
+                    $row[] = 'DESCANSO';
+                    $row[] = 'DESCANSO';
+                    $row[] = 'DESCANSO';
+                    $row[] = 'DESCANSO';
+                    $row[] = 'DESCANSO';
+                } elseif ($day['is_holiday']) {
+                    $row[] = 'FESTIVO';
+                    $row[] = 'FESTIVO';
+                    $row[] = 'FESTIVO';
+                    $row[] = 'FESTIVO';
+                    $row[] = 'FESTIVO';
+                } elseif ($day['total_punches'] === 0) {
+                    $row[] = 'FALTA';
+                    $row[] = 'FALTA';
+                    $row[] = 'FALTA';
+                    $row[] = 'FALTA';
+                    $row[] = 'FALTA';
+                } else {
+                    $row[] = ($day['entrada_12h'] !== '-') ? $day['entrada_12h'] : 'FALTA';
+                    $row[] = ($day['is_tardy']) ? 'Sí' : '';
+                    $row[] = ($day['salida_comer_12h'] !== '-') ? $day['salida_comer_12h'] : 'FALTA';
+                    $row[] = ($day['entrada_comer_12h'] !== '-') ? $day['entrada_comer_12h'] : 'FALTA';
+                    $row[] = ($day['salida_12h'] !== '-') ? $day['salida_12h'] : 'FALTA';
+                }
             }
-            fputcsv($fp, ['RESUMEN QUINCENAL', $emp['name'], 'Total Horas:', $emp['total_worked_formatted'], 'Total Retardos:', $emp['total_tardiness_count']]);
-            fputcsv($fp, []);
+
+            fputcsv($fp, $row);
         }
 
         fclose($fp);
@@ -454,11 +588,11 @@ class SendQuincenalAttendanceReportCommand extends Command
     }
 
     /**
-     * Genera reporte HTML estilizado (Propuesta 1)
+     * Genera reporte HTML de Resumen de Asistencia por Empleado para el cuerpo del correo (Imagen 1)
      */
     private function generateHtmlReport(Company $company, array $reportData, Carbon $startDate, Carbon $endDate, string $outputDir, string $scheduleEntry, int $tolerance, string $periodLabel): array
     {
-        $filename = "reporte_quincenal_{$company->id}_" . $startDate->format('Ymd') . "_" . $endDate->format('Ymd') . ".html";
+        $filename = "reporte_resumen_{$company->id}_" . $startDate->format('Ymd') . "_" . $endDate->format('Ymd') . ".html";
         $filepath = $outputDir . '/' . $filename;
 
         $startDateStr = $startDate->format('d/m/Y');
@@ -466,43 +600,24 @@ class SendQuincenalAttendanceReportCommand extends Command
 
         $rowsHtml = '';
         foreach ($reportData as $emp) {
-            $firstDay = true;
-            $dayCount = count($emp['days']);
+            $tardyStyle = ($emp['total_tardiness'] > 0)
+                ? "style='background-color: #881337; color: #ffffff; font-weight: bold; text-align: center;'"
+                : "style='text-align: center;'";
 
-            foreach ($emp['days'] as $day) {
-                $rowsHtml .= "<tr>";
-                if ($firstDay) {
-                    $rowsHtml .= "<td rowspan='{$dayCount}' class='emp-pin'><strong>{$emp['pin']}</strong></td>";
-                    $rowsHtml .= "<td rowspan='{$dayCount}' class='emp-name'>
-                                    <strong>{$emp['name']}</strong><br>
-                                    <small>Tarj: {$emp['card']}</small><br>
-                                    <div class='emp-summary'>
-                                        <span class='summary-badge'><strong>{$emp['total_worked_formatted']}</strong> lab.</span>
-                                        <span class='summary-badge " . ($emp['total_tardiness_count'] > 0 ? 'badge-danger' : 'badge-success') . "'>{$emp['total_tardiness_count']} retardos</span>
-                                    </div>
-                                  </td>";
-                    $firstDay = false;
-                }
+            $absenceStyle = ($emp['total_absences'] >= 5)
+                ? "style='background-color: #881337; color: #ffffff; font-weight: bold; text-align: center;'"
+                : (($emp['total_absences'] > 0)
+                    ? "style='background-color: #ffe4e6; color: #9f1239; font-weight: bold; text-align: center;'"
+                    : "style='text-align: center;'");
 
-                $badgeClass = ($day['total_punches'] >= 4) ? 'badge-success' : (($day['total_punches'] > 0) ? 'badge-warning' : 'badge-gray');
-
-                $tardinessBadge = '-';
-                if ($day['tardiness_status'] === 'A Tiempo') {
-                    $tardinessBadge = "<span class='badge badge-success'>A Tiempo</span>";
-                } elseif ($day['is_tardy']) {
-                    $tardinessBadge = "<span class='badge badge-danger'>{$day['tardiness_status']}</span>";
-                }
-
-                $rowsHtml .= "<td>{$day['day_name']} <small>({$day['date_str']})</small></td>";
-                $rowsHtml .= "<td class='time-cell'>" . ($day['entrada'] !== '-' ? "<span class='punch in'>{$day['entrada']}</span>" : '-') . "</td>";
-                $rowsHtml .= "<td class='time-cell'>" . ($day['salida_comer'] !== '-' ? "<span class='punch out-break'>{$day['salida_comer']}</span>" : '-') . "</td>";
-                $rowsHtml .= "<td class='time-cell'>" . ($day['entrada_comer'] !== '-' ? "<span class='punch in-break'>{$day['entrada_comer']}</span>" : '-') . "</td>";
-                $rowsHtml .= "<td class='time-cell'>" . ($day['salida'] !== '-' ? "<span class='punch out'>{$day['salida']}</span>" : '-') . "</td>";
-                $rowsHtml .= "<td class='time-cell'><strong>{$day['worked_time']}</strong></td>";
-                $rowsHtml .= "<td class='text-center'>{$tardinessBadge}</td>";
-                $rowsHtml .= "<td class='text-center'><span class='badge {$badgeClass}'>{$day['total_punches']}</span></td>";
-                $rowsHtml .= "</tr>";
-            }
+            $rowsHtml .= "<tr>";
+            $rowsHtml .= "<td style='text-align: center; font-weight: bold; padding: 8px;'>{$emp['pin']}</td>";
+            $rowsHtml .= "<td style='text-align: left; font-weight: bold; padding: 8px; color: #0f172a;'>{$emp['name']}</td>";
+            $rowsHtml .= "<td style='text-align: center; padding: 8px;'>" . ($emp['total_assistances'] > 0 ? $emp['total_assistances'] : '') . "</td>";
+            $rowsHtml .= "<td {$tardyStyle}>" . ($emp['total_tardiness'] > 0 ? $emp['total_tardiness'] : '') . "</td>";
+            $rowsHtml .= "<td {$absenceStyle}>" . ($emp['total_absences'] > 0 ? $emp['total_absences'] : '') . "</td>";
+            $rowsHtml .= "<td style='text-align: center; font-weight: bold; padding: 8px; color: #0284c7;'>{$emp['total_worked_formatted']}</td>";
+            $rowsHtml .= "</tr>";
         }
 
         $htmlContent = <<<HTML
@@ -510,63 +625,42 @@ class SendQuincenalAttendanceReportCommand extends Command
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <title>Reporte Quincenal de Asistencia - {$company->name}</title>
+    <title>Reporte de Asistencia - {$company->name}</title>
     <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f6f9; margin: 0; padding: 20px; color: #333; }
-        .container { max-width: 1250px; margin: 0 auto; background: #fff; padding: 25px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.08); }
-        .header { border-bottom: 2px solid #2563eb; padding-bottom: 15px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; }
-        .header h2 { margin: 0; color: #1e3a8a; }
-        .header p { margin: 5px 0 0 0; color: #64748b; font-size: 14px; }
-        .config-info { font-size: 12px; background: #eff6ff; padding: 8px 12px; border-radius: 6px; border-left: 4px solid #2563eb; color: #1e40af; margin-bottom: 15px; }
-        table { width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 13px; }
-        th, td { padding: 10px 12px; border: 1px solid #e2e8f0; text-align: left; }
-        th { background-color: #1e293b; color: #fff; text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px; }
+        body { font-family: Arial, Helvetica, sans-serif; background-color: #f8fafc; margin: 0; padding: 15px; color: #1e293b; }
+        .container { max-width: 900px; margin: 0 auto; background: #ffffff; border-radius: 6px; border: 1px solid #cbd5e1; overflow: hidden; }
+        .header { background-color: #0284c7; color: #ffffff; padding: 14px 20px; }
+        .header h3 { margin: 0; font-size: 18px; text-transform: uppercase; font-weight: bold; }
+        .header p { margin: 4px 0 0 0; font-size: 13px; color: #e0f2fe; }
+        table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        th { border: 1px solid #94a3b8; padding: 8px 10px; text-align: center; }
+        th.main-header { background-color: #0284c7; color: #ffffff; text-transform: uppercase; font-size: 12px; font-weight: bold; }
+        th.group-header { background-color: #38bdf8; color: #0f172a; text-transform: uppercase; font-size: 12px; font-weight: bold; }
+        th.sub-header { background-color: #7dd3fc; color: #0f172a; font-size: 11px; font-weight: bold; }
+        td { border: 1px solid #cbd5e1; font-size: 12px; }
         tr:nth-child(even) { background-color: #f8fafc; }
-        .emp-pin { background-color: #f1f5f9; text-align: center; }
-        .emp-name { background-color: #f8fafc; }
-        .emp-summary { margin-top: 6px; }
-        .summary-badge { font-size: 10px; padding: 2px 6px; border-radius: 4px; background: #e2e8f0; color: #334155; margin-right: 4px; display: inline-block; }
-        .time-cell { text-align: center; }
-        .punch { padding: 3px 6px; border-radius: 4px; font-family: monospace; font-weight: bold; font-size: 12px; }
-        .punch.in { background-color: #dcfce7; color: #15803d; }
-        .punch.out-break { background-color: #fef3c7; color: #b45309; }
-        .punch.in-break { background-color: #e0f2fe; color: #0369a1; }
-        .punch.out { background-color: #fee2e2; color: #b91c1c; }
-        .badge { padding: 4px 8px; border-radius: 12px; font-size: 11px; font-weight: bold; }
-        .badge-success { background-color: #22c55e; color: #fff; }
-        .badge-danger { background-color: #ef4444; color: #fff; }
-        .badge-warning { background-color: #f59e0b; color: #fff; }
-        .badge-gray { background-color: #94a3b8; color: #fff; }
-        .text-center { text-align: center; }
-        .footer { margin-top: 25px; text-align: center; font-size: 12px; color: #94a3b8; }
+        .footer { padding: 12px; font-size: 11px; color: #64748b; text-align: center; background-color: #f1f5f9; border-top: 1px solid #cbd5e1; }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <div>
-                <h2>Reporte Quincenal de Asistencia</h2>
-                <p>Empresa: <strong>{$company->name}</strong> | Periodo: <strong>{$periodLabel} ({$startDateStr} al {$endDateStr})</strong></p>
-            </div>
-        </div>
-
-        <div class="config-info">
-            ⏱ <strong>Criterios de Evaluación Quincenal:</strong> Hora Oficial de Entrada: <strong>{$scheduleEntry} AM</strong> | Tolerancia de Retardo: <strong>{$tolerance} minutos</strong> (Tolerante hasta {$scheduleEntry} + {$tolerance}m) | Tiempo Laborado excluye lapso de comida.
+            <h3>Reporte de Asistencia x Sucursal</h3>
+            <p>Empresa / Sucursal: <strong>{$company->name}</strong> | Periodo: <strong>{$periodLabel} ({$startDateStr} al {$endDateStr})</strong></p>
         </div>
 
         <table>
             <thead>
                 <tr>
-                    <th>PIN</th>
-                    <th>Empleado</th>
-                    <th>Día / Fecha</th>
-                    <th>1. Entrada</th>
-                    <th>2. Salida Comer</th>
-                    <th>3. Entrada Comer</th>
-                    <th>4. Salida</th>
-                    <th>Tiempo Laborado</th>
-                    <th>Estatus Retardo</th>
-                    <th>Marcaciones</th>
+                    <th rowspan="2" class="main-header" style="width: 80px;">Número</th>
+                    <th rowspan="2" class="main-header">Nombre</th>
+                    <th colspan="4" class="group-header">Periodo</th>
+                </tr>
+                <tr>
+                    <th class="sub-header" style="width: 90px;">Asistencias</th>
+                    <th class="sub-header" style="width: 90px;">Retardos</th>
+                    <th class="sub-header" style="width: 90px;">Faltas</th>
+                    <th class="sub-header" style="width: 130px;">Horas Laboradas</th>
                 </tr>
             </thead>
             <tbody>
