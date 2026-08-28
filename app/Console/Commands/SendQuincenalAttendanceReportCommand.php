@@ -111,10 +111,23 @@ class SendQuincenalAttendanceReportCommand extends Command
                     $this->info("  ✓ Archivo HTML generado: {$htmlFile}");
                 }
 
-                // Enviar correo si está configurado
+                // Obtener destinatarios a quienes enviar el reporte
+                $recipients = [];
                 if ($email) {
-                    $this->sendReportEmail($email, $company, $startDate, $endDate, $htmlContent, $csvFile, $periodLabel);
-                    $this->info("  ✓ Reporte enviado por correo a: {$email}");
+                    $recipients = array_map('trim', explode(',', $email));
+                } elseif (!empty($company->report_emails) && is_array($company->report_emails)) {
+                    $recipients = $company->report_emails;
+                }
+
+                if (empty($recipients)) {
+                    $this->line("  -> Sin destinatarios (report_emails) configurados para esta empresa.");
+                } else {
+                    foreach ($recipients as $recipientEmail) {
+                        $recipientEmail = trim($recipientEmail);
+                        if (filter_var($recipientEmail, FILTER_VALIDATE_EMAIL)) {
+                            $this->sendAndLogReportEmail($recipientEmail, $company, $startDate, $endDate, $htmlContent, $csvFile, $periodLabel);
+                        }
+                    }
                 }
             }
 
@@ -575,10 +588,13 @@ HTML;
     }
 
     /**
-     * Envía correo con el reporte adjunto o en cuerpo HTML
+     * Envía correo con el reporte adjunto o en cuerpo HTML y registra bitácora
      */
-    private function sendReportEmail(string $email, Company $company, Carbon $startDate, Carbon $endDate, ?string $htmlContent, ?string $csvFile, string $periodLabel): void
+    private function sendAndLogReportEmail(string $email, Company $company, Carbon $startDate, Carbon $endDate, ?string $htmlContent, ?string $csvFile, string $periodLabel): void
     {
+        $status = 'sent';
+        $errorMessage = null;
+
         try {
             if ($htmlContent && class_exists(Mail::class)) {
                 Mail::html($htmlContent, function ($message) use ($email, $company, $startDate, $endDate, $csvFile, $periodLabel) {
@@ -589,10 +605,29 @@ HTML;
                         $message->attach($csvFile);
                     }
                 });
+                $this->info("  ✓ Reporte enviado por correo a: {$email}");
             }
         } catch (Exception $e) {
-            $this->warn("  ⚠ No se pudo enviar el correo a {$email}: " . $e->getMessage());
-            Log::warning("Failed to send quincenal attendance email to {$email}", ['error' => $e->getMessage()]);
+            $status = 'failed';
+            $errorMessage = $e->getMessage();
+            $this->warn("  ⚠ Falló el envío a {$email}: {$errorMessage}");
+            Log::warning("Failed to send quincenal attendance email to {$email}", ['error' => $errorMessage]);
+        }
+
+        // Registrar en la tabla attendance_report_logs
+        try {
+            \App\Models\AttendanceReportLog::create([
+                'company_id' => $company->id,
+                'intercompania' => $company->intercompania ?? $company->code,
+                'report_type' => 'quincenal',
+                'period_label' => $periodLabel,
+                'recipient_email' => $email,
+                'status' => $status,
+                'error_message' => $errorMessage,
+                'sent_at' => ($status === 'sent') ? Carbon::now() : null,
+            ]);
+        } catch (Exception $e) {
+            Log::error("Error saving attendance report log: " . $e->getMessage());
         }
     }
 
