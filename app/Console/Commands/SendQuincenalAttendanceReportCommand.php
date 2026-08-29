@@ -625,28 +625,42 @@ class SendQuincenalAttendanceReportCommand extends Command
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <title>Reporte de Asistencia - {$company->name}</title>
+    <title>Reporte Quincenal de Asistencia - {$company->name}</title>
     <style>
-        body { font-family: Arial, Helvetica, sans-serif; background-color: #f8fafc; margin: 0; padding: 15px; color: #1e293b; }
-        .container { max-width: 900px; margin: 0 auto; background: #ffffff; border-radius: 6px; border: 1px solid #cbd5e1; overflow: hidden; }
-        .header { background-color: #0284c7; color: #ffffff; padding: 14px 20px; }
-        .header h3 { margin: 0; font-size: 18px; text-transform: uppercase; font-weight: bold; }
-        .header p { margin: 4px 0 0 0; font-size: 13px; color: #e0f2fe; }
-        table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        body { font-family: 'Segoe UI', Arial, Helvetica, sans-serif; background-color: #ffffff; margin: 0; padding: 20px; color: #1e293b; }
+        .container { max-width: 950px; margin: 0 auto; background: #ffffff; }
+
+        /* Encabezado original */
+        .report-header { padding-bottom: 12px; border-bottom: 2px solid #2563eb; margin-bottom: 12px; }
+        .report-title { font-size: 22px; font-weight: 800; color: #1e3a8a; margin: 0 0 6px 0; }
+        .report-subtitle { font-size: 13px; color: #64748b; margin: 0; }
+        .report-subtitle strong { color: #334155; }
+
+        .config-info { font-size: 12px; background: #f0f7ff; padding: 8px 12px; border-radius: 4px; border-left: 4px solid #2563eb; color: #1d4ed8; margin-bottom: 20px; }
+        .config-info strong { color: #1e3a8a; }
+
+        table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 10px; }
         th { border: 1px solid #94a3b8; padding: 8px 10px; text-align: center; }
         th.main-header { background-color: #0284c7; color: #ffffff; text-transform: uppercase; font-size: 12px; font-weight: bold; }
         th.group-header { background-color: #38bdf8; color: #0f172a; text-transform: uppercase; font-size: 12px; font-weight: bold; }
         th.sub-header { background-color: #7dd3fc; color: #0f172a; font-size: 11px; font-weight: bold; }
         td { border: 1px solid #cbd5e1; font-size: 12px; }
         tr:nth-child(even) { background-color: #f8fafc; }
-        .footer { padding: 12px; font-size: 11px; color: #64748b; text-align: center; background-color: #f1f5f9; border-top: 1px solid #cbd5e1; }
+        .footer { margin-top: 20px; padding: 12px; font-size: 11px; color: #64748b; text-align: center; background-color: #f8fafc; border-top: 1px solid #e2e8f0; }
     </style>
 </head>
 <body>
     <div class="container">
-        <div class="header">
-            <h3>Reporte de Asistencia x Sucursal</h3>
-            <p>Empresa / Sucursal: <strong>{$company->name}</strong> | Periodo: <strong>{$periodLabel} ({$startDateStr} al {$endDateStr})</strong></p>
+        <!-- Encabezado exacto conservado -->
+        <div class="report-header">
+            <h1 class="report-title">Reporte Quincenal de Asistencia</h1>
+            <p class="report-subtitle">
+                Empresa: <strong>{$company->name}</strong> | Periodo: <strong>{$periodLabel} ({$startDateStr} al {$endDateStr})</strong>
+            </p>
+        </div>
+
+        <div class="config-info">
+            ⏱ <strong>Criterios de Evaluación Quincenal:</strong> Hora Oficial de Entrada: <strong>{$scheduleEntry} AM</strong> | Tolerancia de Retardo: <strong>{$tolerance} minutos</strong> (Tolerante hasta {$scheduleEntry} + {$tolerance}m) | Tiempo Laborado excluye lapso de comida.
         </div>
 
         <table>
