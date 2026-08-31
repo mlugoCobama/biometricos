@@ -80,6 +80,11 @@ $router->group(['prefix' => 'api/v1'], function ($router) {
     // Attendance Logs & Statistics
     $router->get('/attendance-logs', 'AttendanceLogController@index');
     $router->get('/attendance-logs/stats', 'AttendanceLogController@stats');
+
+    // Attendance Reports (Diario, Quincenal, Mensual por Empresa)
+    $router->get('/reports/attendance/daily', 'AttendanceReportController@daily');
+    $router->get('/reports/attendance/quincenal', 'AttendanceReportController@quincenal');
+    $router->get('/reports/attendance/monthly', 'AttendanceReportController@monthly');
 });
 
 /*
