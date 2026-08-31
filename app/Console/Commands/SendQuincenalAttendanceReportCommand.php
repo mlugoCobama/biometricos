@@ -24,7 +24,7 @@ class SendQuincenalAttendanceReportCommand extends Command
                             {--email= : Correo electrónico destino}
                             {--period=current_quincena : Periodo quincenal (current_quincena, previous_quincena, YYYY-MM-Q1, YYYY-MM-Q2)}
                             {--format=all : Formato de salida (table, html, csv, all)}
-                            {--schedule_entry=08:00 : Hora oficial de entrada (HH:MM)}
+                            {--schedule_entry=09:00 : Hora oficial de entrada (HH:MM)}
                             {--tolerance=15 : Minutos de tolerancia para retardo}
                             {--output_dir= : Directorio personalizado para guardar reportes}';
 
@@ -405,11 +405,17 @@ class SendQuincenalAttendanceReportCommand extends Command
         } else {
             $times = $logs->pluck('punch_time')->map(fn($t) => $t->format('H:i:s'))->toArray();
 
-            if (isset($times[0])) $result['entrada'] = $times[0];
-            if (isset($times[1])) $result['salida_comer'] = $times[1];
-            if (isset($times[2])) $result['entrada_comer'] = $times[2];
-            if (isset($times[3])) $result['salida'] = $times[3];
-            if (count($times) > 4) $result['salida'] = end($times);
+            if (count($times) === 2) {
+                // Si sólo existen 2 marcaciones en el día: 1ra = Entrada, 2da = Salida
+                $result['entrada'] = $times[0];
+                $result['salida'] = $times[1];
+            } else {
+                if (isset($times[0])) $result['entrada'] = $times[0];
+                if (isset($times[1])) $result['salida_comer'] = $times[1];
+                if (isset($times[2])) $result['entrada_comer'] = $times[2];
+                if (isset($times[3])) $result['salida'] = $times[3];
+                if (count($times) > 4) $result['salida'] = end($times);
+            }
         }
 
         // Formato 12 Horas (AM/PM) para la matriz Excel/CSV (Imagen 2)

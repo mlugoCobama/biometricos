@@ -37,7 +37,7 @@ class AttendanceReportController extends Controller
         }
 
         $date = $request->input('date') ? Carbon::parse($request->input('date')) : Carbon::now();
-        $scheduleEntry = $request->input('schedule_entry', '08:00');
+        $scheduleEntry = $request->input('schedule_entry', '09:00');
         $tolerance = (int)$request->input('tolerance', 15);
 
         $reportData = $this->reportService->generateDailyReport($company, $date, $scheduleEntry, $tolerance);
@@ -68,7 +68,7 @@ class AttendanceReportController extends Controller
         }
 
         [$startDate, $endDate, $periodLabel] = $this->resolveQuincenalRange($request->input('period', 'current_quincena'));
-        $scheduleEntry = $request->input('schedule_entry', '08:00');
+        $scheduleEntry = $request->input('schedule_entry', '09:00');
         $tolerance = (int)$request->input('tolerance', 15);
 
         $reportData = $this->reportService->generatePeriodReport(
@@ -107,7 +107,7 @@ class AttendanceReportController extends Controller
         }
 
         [$startDate, $endDate, $periodLabel] = $this->resolveMonthlyRange($request->input('month', 'current_month'));
-        $scheduleEntry = $request->input('schedule_entry', '08:00');
+        $scheduleEntry = $request->input('schedule_entry', '09:00');
         $tolerance = (int)$request->input('tolerance', 15);
 
         $reportData = $this->reportService->generatePeriodReport(

@@ -14,7 +14,7 @@ class AttendanceReportService
     /**
      * Genera reporte diario de asistencia por empresa
      */
-    public function generateDailyReport(Company $company, Carbon $date, string $scheduleEntry = '08:00', int $tolerance = 15): array
+    public function generateDailyReport(Company $company, Carbon $date, string $scheduleEntry = '09:00', int $tolerance = 15): array
     {
         $dateStr = $date->format('Y-m-d');
         $isToday = $date->isToday();
@@ -97,7 +97,7 @@ class AttendanceReportService
     /**
      * Genera reporte quincenal o mensual de asistencia por empresa
      */
-    public function generatePeriodReport(Company $company, Carbon $startDate, Carbon $endDate, string $scheduleEntry = '08:00', int $tolerance = 15, string $reportType = 'quincenal', string $periodLabel = ''): array
+    public function generatePeriodReport(Company $company, Carbon $startDate, Carbon $endDate, string $scheduleEntry = '09:00', int $tolerance = 15, string $reportType = 'quincenal', string $periodLabel = ''): array
     {
         // 1. Cargar festivos y horarios de departamento
         $holidays = $this->loadHolidays($company, $startDate, $endDate);
@@ -256,11 +256,17 @@ class AttendanceReportService
         } else {
             $times = $logs->pluck('punch_time')->map(fn($t) => $t->format('H:i:s'))->toArray();
 
-            if (isset($times[0])) $result['entrada'] = $times[0];
-            if (isset($times[1])) $result['salida_comer'] = $times[1];
-            if (isset($times[2])) $result['entrada_comer'] = $times[2];
-            if (isset($times[3])) $result['salida'] = $times[3];
-            if (count($times) > 4) $result['salida'] = end($times);
+            if (count($times) === 2) {
+                // Si sólo existen 2 marcaciones en el día: 1ra = Entrada, 2da = Salida
+                $result['entrada'] = $times[0];
+                $result['salida'] = $times[1];
+            } else {
+                if (isset($times[0])) $result['entrada'] = $times[0];
+                if (isset($times[1])) $result['salida_comer'] = $times[1];
+                if (isset($times[2])) $result['entrada_comer'] = $times[2];
+                if (isset($times[3])) $result['salida'] = $times[3];
+                if (count($times) > 4) $result['salida'] = end($times);
+            }
         }
 
         // Formato 12 Horas
