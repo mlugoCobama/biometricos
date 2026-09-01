@@ -14,8 +14,17 @@ class AttendanceLogController extends Controller
     {
         $query = AttendanceLog::with(['company', 'device', 'employee']);
 
-        if ($request->has('company_id')) {
-            $query->where('company_id', $request->input('company_id'));
+        if ($request->has('intercompania') || $request->has('company_id')) {
+            $intercompania = $request->input('intercompania') ?: $request->input('company_id');
+            $company = \App\Models\Company::query()
+                ->where('intercompania', (string)$intercompania)
+                ->orWhere('code', (string)$intercompania)
+                ->orWhere('id', (string)$intercompania)
+                ->first();
+
+            if ($company) {
+                $query->where('company_id', $company->id);
+            }
         }
 
         if ($request->has('device_id')) {
@@ -53,7 +62,18 @@ class AttendanceLogController extends Controller
 
     public function stats(Request $request)
     {
-        $companyId = $request->input('company_id');
+        $intercompania = $request->input('intercompania') ?: $request->input('company_id');
+        $companyId = null;
+
+        if ($intercompania) {
+            $company = \App\Models\Company::query()
+                ->where('intercompania', (string)$intercompania)
+                ->orWhere('code', (string)$intercompania)
+                ->orWhere('id', (string)$intercompania)
+                ->first();
+            $companyId = $company?->id;
+        }
+
         $today = Carbon::today();
 
         $logsQuery = AttendanceLog::query();

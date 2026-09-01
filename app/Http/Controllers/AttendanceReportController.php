@@ -24,8 +24,8 @@ class AttendanceReportController extends Controller
     public function daily(Request $request): JsonResponse
     {
         $this->validate($request, [
-            'company_id' => 'required_without:intercompania|integer',
-            'intercompania' => 'required_without:company_id|string',
+            'intercompania' => 'required_without:company_id',
+            'company_id' => 'required_without:intercompania',
             'date' => 'nullable|date_format:Y-m-d',
             'schedule_entry' => 'nullable|string',
             'tolerance' => 'nullable|integer',
@@ -33,7 +33,7 @@ class AttendanceReportController extends Controller
 
         $company = $this->resolveCompany($request);
         if (!$company) {
-            return response()->json(['success' => false, 'message' => 'Empresa no encontrada'], 404);
+            return response()->json(['success' => false, 'message' => 'Empresa/Intercompañía no encontrada'], 404);
         }
 
         $date = $request->input('date') ? Carbon::parse($request->input('date')) : Carbon::now();
@@ -55,8 +55,8 @@ class AttendanceReportController extends Controller
     public function quincenal(Request $request): JsonResponse
     {
         $this->validate($request, [
-            'company_id' => 'required_without:intercompania|integer',
-            'intercompania' => 'required_without:company_id|string',
+            'intercompania' => 'required_without:company_id',
+            'company_id' => 'required_without:intercompania',
             'period' => 'nullable|string',
             'schedule_entry' => 'nullable|string',
             'tolerance' => 'nullable|integer',
@@ -64,7 +64,7 @@ class AttendanceReportController extends Controller
 
         $company = $this->resolveCompany($request);
         if (!$company) {
-            return response()->json(['success' => false, 'message' => 'Empresa no encontrada'], 404);
+            return response()->json(['success' => false, 'message' => 'Empresa/Intercompañía no encontrada'], 404);
         }
 
         [$startDate, $endDate, $periodLabel] = $this->resolveQuincenalRange($request->input('period', 'current_quincena'));
@@ -94,8 +94,8 @@ class AttendanceReportController extends Controller
     public function monthly(Request $request): JsonResponse
     {
         $this->validate($request, [
-            'company_id' => 'required_without:intercompania|integer',
-            'intercompania' => 'required_without:company_id|string',
+            'intercompania' => 'required_without:company_id',
+            'company_id' => 'required_without:intercompania',
             'month' => 'nullable|string',
             'schedule_entry' => 'nullable|string',
             'tolerance' => 'nullable|integer',
@@ -103,7 +103,7 @@ class AttendanceReportController extends Controller
 
         $company = $this->resolveCompany($request);
         if (!$company) {
-            return response()->json(['success' => false, 'message' => 'Empresa no encontrada'], 404);
+            return response()->json(['success' => false, 'message' => 'Empresa/Intercompañía no encontrada'], 404);
         }
 
         [$startDate, $endDate, $periodLabel] = $this->resolveMonthlyRange($request->input('month', 'current_month'));
@@ -127,22 +127,59 @@ class AttendanceReportController extends Controller
     }
 
     /**
-     * Resuelve el modelo Company desde company_id o intercompania
+     * Reporte Diario por Intercompañía (parámetro en URL)
+     * GET /api/v1/companies/intercompania/{intercompania}/reports/daily
+     */
+    public function dailyByIntercompania(string $intercompania, Request $request): JsonResponse
+    {
+        $request->merge(['intercompania' => $intercompania]);
+        return $this->daily($request);
+    }
+
+    /**
+     * Reporte Quincenal por Intercompañía (parámetro en URL)
+     * GET /api/v1/companies/intercompania/{intercompania}/reports/quincenal
+     */
+    public function quincenalByIntercompania(string $intercompania, Request $request): JsonResponse
+    {
+        $request->merge(['intercompania' => $intercompania]);
+        return $this->quincenal($request);
+    }
+
+    /**
+     * Reporte Mensual por Intercompañía (parámetro en URL)
+     * GET /api/v1/companies/intercompania/{intercompania}/reports/monthly
+     */
+    public function monthlyByIntercompania(string $intercompania, Request $request): JsonResponse
+    {
+        $request->merge(['intercompania' => $intercompania]);
+        return $this->monthly($request);
+    }
+
+    /**
+     * Resuelve el modelo Company buscando primeramente por número/código de intercompañía u opcionalmente company_id
      */
     private function resolveCompany(Request $request): ?Company
     {
-        $companyId = $request->input('company_id');
-        $intercompania = $request->input('intercompania');
+        $intercompania = $request->input('intercompania') ?: $request->input('company_id');
 
-        if ($companyId) {
-            return Company::find($companyId);
+        if (!$intercompania) {
+            return null;
         }
 
-        if ($intercompania) {
-            return Company::query()
-                ->where('code', $intercompania)
-                ->orWhere('intercompania', $intercompania)
-                ->first();
+        // 1. Buscar por número/código de intercompañía o por código de empresa
+        $company = Company::query()
+            ->where('intercompania', (string)$intercompania)
+            ->orWhere('code', (string)$intercompania)
+            ->first();
+
+        if ($company) {
+            return $company;
+        }
+
+        // 2. Fallback por ID de empresa si se envía numérico
+        if (is_numeric($intercompania)) {
+            return Company::find((int)$intercompania);
         }
 
         return null;

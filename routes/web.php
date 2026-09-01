@@ -81,10 +81,15 @@ $router->group(['prefix' => 'api/v1'], function ($router) {
     $router->get('/attendance-logs', 'AttendanceLogController@index');
     $router->get('/attendance-logs/stats', 'AttendanceLogController@stats');
 
-    // Attendance Reports (Diario, Quincenal, Mensual por Empresa)
+    // Attendance Reports (por parámetro query ?intercompania=XXX o ?company_id=X)
     $router->get('/reports/attendance/daily', 'AttendanceReportController@daily');
     $router->get('/reports/attendance/quincenal', 'AttendanceReportController@quincenal');
     $router->get('/reports/attendance/monthly', 'AttendanceReportController@monthly');
+
+    // Attendance Reports (parámetro directo en la URL por intercompañía)
+    $router->get('/companies/intercompania/{intercompania}/reports/daily', 'AttendanceReportController@dailyByIntercompania');
+    $router->get('/companies/intercompania/{intercompania}/reports/quincenal', 'AttendanceReportController@quincenalByIntercompania');
+    $router->get('/companies/intercompania/{intercompania}/reports/monthly', 'AttendanceReportController@monthlyByIntercompania');
 });
 
 /*
