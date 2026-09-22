@@ -232,41 +232,12 @@ class AttendanceReportService
             return $result;
         }
 
-        // 1. Mapear marcaciones
-        $hasExplicitTypes = $logs->contains(fn($l) => in_array($l->punch_type, [1, 2, 3]));
+        // 1. Mapear marcaciones (Primer registro del día como entrada, último como salida)
+        $times = $logs->pluck('punch_time')->map(fn($t) => $t->format('H:i:s'))->toArray();
 
-        if ($hasExplicitTypes) {
-            foreach ($logs as $log) {
-                $time = $log->punch_time->format('H:i:s');
-                switch ($log->punch_type) {
-                    case 0:
-                        if ($result['entrada'] === '-') $result['entrada'] = $time;
-                        break;
-                    case 2:
-                        if ($result['salida_comer'] === '-') $result['salida_comer'] = $time;
-                        break;
-                    case 3:
-                        if ($result['entrada_comer'] === '-') $result['entrada_comer'] = $time;
-                        break;
-                    case 1:
-                        $result['salida'] = $time;
-                        break;
-                }
-            }
-        } else {
-            $times = $logs->pluck('punch_time')->map(fn($t) => $t->format('H:i:s'))->toArray();
-
-            if (count($times) === 2) {
-                // Si sólo existen 2 marcaciones en el día: 1ra = Entrada, 2da = Salida
-                $result['entrada'] = $times[0];
-                $result['salida'] = $times[1];
-            } else {
-                if (isset($times[0])) $result['entrada'] = $times[0];
-                if (isset($times[1])) $result['salida_comer'] = $times[1];
-                if (isset($times[2])) $result['entrada_comer'] = $times[2];
-                if (isset($times[3])) $result['salida'] = $times[3];
-                if (count($times) > 4) $result['salida'] = end($times);
-            }
+        if (count($times) >= 1) {
+            $result['entrada'] = $times[0];
+            $result['salida'] = (count($times) > 1) ? end($times) : '-';
         }
 
         // Formato 12 Horas
