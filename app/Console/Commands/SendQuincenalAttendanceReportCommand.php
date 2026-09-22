@@ -572,17 +572,17 @@ class SendQuincenalAttendanceReportCommand extends Command
                     $row[] = 'FESTIVO';
                     $row[] = 'FESTIVO';
                 } elseif ($day['total_punches'] === 0) {
-                    $row[] = 'FALTA';
-                    $row[] = 'FALTA';
-                    $row[] = 'FALTA';
-                    $row[] = 'FALTA';
-                    $row[] = 'FALTA';
+                    $row[] = '-';
+                    $row[] = '';
+                    $row[] = '-';
+                    $row[] = '-';
+                    $row[] = '-';
                 } else {
-                    $row[] = ($day['entrada_12h'] !== '-') ? $day['entrada_12h'] : 'FALTA';
+                    $row[] = ($day['entrada_12h'] !== '-') ? $day['entrada_12h'] : '-';
                     $row[] = ($day['is_tardy']) ? 'Sí' : '';
-                    $row[] = ($day['salida_comer_12h'] !== '-') ? $day['salida_comer_12h'] : 'FALTA';
-                    $row[] = ($day['entrada_comer_12h'] !== '-') ? $day['entrada_comer_12h'] : 'FALTA';
-                    $row[] = ($day['salida_12h'] !== '-') ? $day['salida_12h'] : 'FALTA';
+                    $row[] = ($day['salida_comer_12h'] !== '-') ? $day['salida_comer_12h'] : '-';
+                    $row[] = ($day['entrada_comer_12h'] !== '-') ? $day['entrada_comer_12h'] : '-';
+                    $row[] = ($day['salida_12h'] !== '-') ? $day['salida_12h'] : '-';
                 }
             }
 
