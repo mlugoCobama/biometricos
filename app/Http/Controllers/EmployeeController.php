@@ -19,7 +19,8 @@ class EmployeeController extends Controller
 
     public function index(Request $request)
     {
-        $query = Employee::with(['company'])->withCount('fingerprints');
+        $selectFields = ['id', 'company_id', 'intercompania', 'pin', 'first_name', 'last_name', 'department', 'card_number'];
+        $query = Employee::query()->select($selectFields);
 
         if ($request->has('company_id')) {
             $companyId = $request->input('company_id');
@@ -77,7 +78,8 @@ class EmployeeController extends Controller
      */
     public function getByCompany($id, Request $request)
     {
-        $query = Employee::with(['company'])->withCount('fingerprints')
+        $selectFields = ['id', 'company_id', 'intercompania', 'pin', 'first_name', 'last_name', 'department', 'card_number'];
+        $query = Employee::query()->select($selectFields)
             ->where(function ($q) use ($id) {
                 $q->where('company_id', $id)
                   ->orWhere('intercompania', (string)$id)
@@ -120,7 +122,8 @@ class EmployeeController extends Controller
      */
     public function getByIntercompania($intercompania, Request $request)
     {
-        $query = Employee::with(['company'])->withCount('fingerprints')
+        $selectFields = ['id', 'company_id', 'intercompania', 'pin', 'first_name', 'last_name', 'department', 'card_number'];
+        $query = Employee::query()->select($selectFields)
             ->where(function ($q) use ($intercompania) {
                 $q->where('intercompania', (string)$intercompania)
                   ->orWhereHas('company', function ($c) use ($intercompania) {
