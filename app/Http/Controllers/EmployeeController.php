@@ -55,19 +55,19 @@ class EmployeeController extends Controller
             });
         }
 
-        if ($request->boolean('all')) {
-            $employees = $query->orderBy('pin', 'asc')->get();
+        if ($request->boolean('paginate')) {
+            $employees = $query->orderBy('pin', 'asc')->paginate($request->input('per_page', 15));
             return response()->json([
                 'success' => true,
-                'total' => count($employees),
                 'data' => $employees
             ]);
         }
 
-        $employees = $query->orderBy('pin', 'asc')->paginate($request->input('per_page', 15));
+        $employees = $query->orderBy('pin', 'asc')->get();
 
         return response()->json([
             'success' => true,
+            'total' => count($employees),
             'data' => $employees
         ]);
     }
@@ -98,19 +98,19 @@ class EmployeeController extends Controller
             });
         }
 
-        if ($request->boolean('all')) {
-            $employees = $query->orderBy('pin', 'asc')->get();
+        if ($request->boolean('paginate')) {
+            $employees = $query->orderBy('pin', 'asc')->paginate($request->input('per_page', 15));
             return response()->json([
                 'success' => true,
-                'total' => count($employees),
                 'data' => $employees
             ]);
         }
 
-        $employees = $query->orderBy('pin', 'asc')->paginate($request->input('per_page', 15));
+        $employees = $query->orderBy('pin', 'asc')->get();
 
         return response()->json([
             'success' => true,
+            'total' => count($employees),
             'data' => $employees
         ]);
     }
@@ -139,19 +139,19 @@ class EmployeeController extends Controller
             });
         }
 
-        if ($request->boolean('all')) {
-            $employees = $query->orderBy('pin', 'asc')->get();
+        if ($request->boolean('paginate')) {
+            $employees = $query->orderBy('pin', 'asc')->paginate($request->input('per_page', 15));
             return response()->json([
                 'success' => true,
-                'total' => count($employees),
                 'data' => $employees
             ]);
         }
 
-        $employees = $query->orderBy('pin', 'asc')->paginate($request->input('per_page', 15));
+        $employees = $query->orderBy('pin', 'asc')->get();
 
         return response()->json([
             'success' => true,
+            'total' => count($employees),
             'data' => $employees
         ]);
     }
