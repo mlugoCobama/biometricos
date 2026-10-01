@@ -21,6 +21,7 @@ class Device extends Model
         'fingerprint_count',
         'att_log_count',
         'last_heartbeat',
+        'last_alert_sent_at',
         'status',
         'location',
     ];
@@ -33,6 +34,7 @@ class Device extends Model
 
     protected $casts = [
         'last_heartbeat' => 'datetime',
+        'last_alert_sent_at' => 'datetime',
         'user_count' => 'integer',
         'fingerprint_count' => 'integer',
         'att_log_count' => 'integer',

@@ -17,6 +17,7 @@ class Kernel extends ConsoleKernel
         Commands\RouteListCommand::class,
         Commands\SendWeeklyAttendanceReportCommand::class,
         Commands\SendQuincenalAttendanceReportCommand::class,
+        Commands\CheckOfflineDevicesCommand::class,
     ];
 
     /**
@@ -27,6 +28,9 @@ class Kernel extends ConsoleKernel
      */
     protected function schedule(Schedule $schedule)
     {
+        // Verificación diaria de biométricos fuera de línea por más de 2 días a las 08:30 AM
+        $schedule->command('devices:check-offline-alert --days=2')->dailyAt('08:30');
+
         // Ejecutar reporte semanal automáticamente cada Lunes a las 08:00 AM
         $schedule->command('attendance:weekly-report --week=previous --format=all')->weeklyOn(1, '08:00');
 
