@@ -58,19 +58,11 @@ class EmployeeController extends Controller
 
         if ($request->boolean('paginate')) {
             $employees = $query->orderBy('pin', 'asc')->paginate($request->input('per_page', 15));
-            return response()->json([
-                'success' => true,
-                'data' => $employees
-            ]);
+            return $this->formatEmployeeResponse($employees, $request);
         }
 
         $employees = $query->orderBy('pin', 'asc')->get();
-
-        return response()->json([
-            'success' => true,
-            'total' => count($employees),
-            'data' => $employees
-        ]);
+        return $this->formatEmployeeResponse($employees, $request);
     }
 
     /**
@@ -78,6 +70,7 @@ class EmployeeController extends Controller
      */
     public function getByCompany($id, Request $request)
     {
+        $request->merge(['company_id' => $id]);
         $selectFields = ['id', 'company_id', 'intercompania', 'pin', 'first_name', 'last_name', 'department', 'card_number'];
         $query = Employee::query()->select($selectFields)
             ->where(function ($q) use ($id) {
@@ -102,19 +95,11 @@ class EmployeeController extends Controller
 
         if ($request->boolean('paginate')) {
             $employees = $query->orderBy('pin', 'asc')->paginate($request->input('per_page', 15));
-            return response()->json([
-                'success' => true,
-                'data' => $employees
-            ]);
+            return $this->formatEmployeeResponse($employees, $request);
         }
 
         $employees = $query->orderBy('pin', 'asc')->get();
-
-        return response()->json([
-            'success' => true,
-            'total' => count($employees),
-            'data' => $employees
-        ]);
+        return $this->formatEmployeeResponse($employees, $request);
     }
 
     /**
@@ -122,6 +107,7 @@ class EmployeeController extends Controller
      */
     public function getByIntercompania($intercompania, Request $request)
     {
+        $request->merge(['intercompania' => $intercompania]);
         $selectFields = ['id', 'company_id', 'intercompania', 'pin', 'first_name', 'last_name', 'department', 'card_number'];
         $query = Employee::query()->select($selectFields)
             ->where(function ($q) use ($intercompania) {
@@ -144,18 +130,74 @@ class EmployeeController extends Controller
 
         if ($request->boolean('paginate')) {
             $employees = $query->orderBy('pin', 'asc')->paginate($request->input('per_page', 15));
-            return response()->json([
-                'success' => true,
-                'data' => $employees
-            ]);
+            return $this->formatEmployeeResponse($employees, $request);
         }
 
         $employees = $query->orderBy('pin', 'asc')->get();
+        return $this->formatEmployeeResponse($employees, $request);
+    }
+
+    /**
+     * Formatea la respuesta JSON colocando company_id, device_id e intercompania a nivel raíz
+     */
+    private function formatEmployeeResponse($employees, Request $request)
+    {
+        $items = ($employees instanceof \Illuminate\Pagination\LengthAwarePaginator) ? $employees->getCollection() : $employees;
+
+        $firstEmp = $items->first();
+        $companyId = $request->input('company_id') ?: ($firstEmp ? $firstEmp->company_id : null);
+        $intercompania = $request->input('intercompania') ?: ($firstEmp ? $firstEmp->intercompania : null);
+
+        // Resolver company_id desde la relación de empresa si no se obtuvo directamente
+        if (!$companyId && $intercompania) {
+            $company = Company::query()
+                ->where('intercompania', (string)$intercompania)
+                ->orWhere('code', (string)$intercompania)
+                ->first();
+            $companyId = $company?->id;
+        }
+
+        // Buscar el biométrico (device_id) asociado a la empresa / intercompañía
+        $deviceId = null;
+        if ($companyId || $intercompania) {
+            $device = Device::query()
+                ->when($companyId, fn($q) => $q->where('company_id', $companyId))
+                ->when(!$companyId && $intercompania, fn($q) => $q->where('intercompania', (string)$intercompania))
+                ->orderBy('id', 'asc')
+                ->first();
+            $deviceId = $device?->id;
+        }
+
+        // Remover company_id e intercompania de cada elemento en el arreglo data
+        $cleanItems = $items->map(function ($emp) {
+            return [
+                'id' => $emp->id,
+                'pin' => (string)$emp->pin,
+                'first_name' => $emp->first_name,
+                'last_name' => $emp->last_name,
+                'department' => $emp->department,
+                'card_number' => $emp->card_number,
+            ];
+        });
+
+        if ($employees instanceof \Illuminate\Pagination\LengthAwarePaginator) {
+            $paginatedData = $employees->toArray();
+            $paginatedData['data'] = $cleanItems;
+            return response()->json(array_merge([
+                'success' => true,
+                'company_id' => $companyId ? (int)$companyId : null,
+                'device_id' => $deviceId ? (int)$deviceId : null,
+                'intercompania' => $intercompania ? (string)$intercompania : null,
+            ], $paginatedData));
+        }
 
         return response()->json([
             'success' => true,
-            'total' => count($employees),
-            'data' => $employees
+            'company_id' => $companyId ? (int)$companyId : null,
+            'device_id' => $deviceId ? (int)$deviceId : null,
+            'intercompania' => $intercompania ? (string)$intercompania : null,
+            'total' => count($cleanItems),
+            'data' => $cleanItems,
         ]);
     }
 
