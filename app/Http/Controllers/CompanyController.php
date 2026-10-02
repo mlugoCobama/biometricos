@@ -32,6 +32,7 @@ class CompanyController extends Controller
             'status' => 'nullable|string|in:active,inactive',
             'report_emails' => 'nullable|array',
             'report_emails.*' => 'email',
+            'report_slots' => 'nullable|integer|in:2,4',
         ]);
 
         $company = Company::create([
@@ -39,6 +40,7 @@ class CompanyController extends Controller
             'code' => $request->input('code') ?? strtoupper(substr(md5(uniqid()), 0, 8)),
             'status' => $request->input('status', 'active'),
             'report_emails' => $request->input('report_emails'),
+            'report_slots' => $request->input('report_slots', 2),
         ]);
 
         return response()->json([
@@ -78,9 +80,10 @@ class CompanyController extends Controller
             'status' => 'sometimes|string|in:active,inactive',
             'report_emails' => 'sometimes|nullable|array',
             'report_emails.*' => 'email',
+            'report_slots' => 'sometimes|integer|in:2,4',
         ]);
 
-        $company->update($request->only(['name', 'code', 'status', 'report_emails']));
+        $company->update($request->only(['name', 'code', 'status', 'report_emails', 'report_slots']));
 
         return response()->json([
             'success' => true,

@@ -29,6 +29,7 @@ class AttendanceReportController extends Controller
             'date' => 'nullable|date_format:Y-m-d',
             'schedule_entry' => 'nullable|string',
             'tolerance' => 'nullable|integer',
+            'report_slots' => 'nullable|integer|in:2,4',
         ]);
 
         $company = $this->resolveCompany($request);
@@ -39,8 +40,9 @@ class AttendanceReportController extends Controller
         $date = $request->input('date') ? Carbon::parse($request->input('date')) : Carbon::now();
         $scheduleEntry = $request->input('schedule_entry', '09:00');
         $tolerance = (int)$request->input('tolerance', 15);
+        $reportSlots = $request->has('report_slots') ? (int)$request->input('report_slots') : null;
 
-        $reportData = $this->reportService->generateDailyReport($company, $date, $scheduleEntry, $tolerance);
+        $reportData = $this->reportService->generateDailyReport($company, $date, $scheduleEntry, $tolerance, $reportSlots);
 
         return response()->json([
             'success' => true,
@@ -60,6 +62,7 @@ class AttendanceReportController extends Controller
             'period' => 'nullable|string',
             'schedule_entry' => 'nullable|string',
             'tolerance' => 'nullable|integer',
+            'report_slots' => 'nullable|integer|in:2,4',
         ]);
 
         $company = $this->resolveCompany($request);
@@ -70,6 +73,7 @@ class AttendanceReportController extends Controller
         [$startDate, $endDate, $periodLabel] = $this->resolveQuincenalRange($request->input('period', 'current_quincena'));
         $scheduleEntry = $request->input('schedule_entry', '09:00');
         $tolerance = (int)$request->input('tolerance', 15);
+        $reportSlots = $request->has('report_slots') ? (int)$request->input('report_slots') : null;
 
         $reportData = $this->reportService->generatePeriodReport(
             $company,
@@ -78,7 +82,8 @@ class AttendanceReportController extends Controller
             $scheduleEntry,
             $tolerance,
             'quincenal',
-            $periodLabel
+            $periodLabel,
+            $reportSlots
         );
 
         return response()->json([
@@ -99,6 +104,7 @@ class AttendanceReportController extends Controller
             'month' => 'nullable|string',
             'schedule_entry' => 'nullable|string',
             'tolerance' => 'nullable|integer',
+            'report_slots' => 'nullable|integer|in:2,4',
         ]);
 
         $company = $this->resolveCompany($request);
@@ -109,6 +115,7 @@ class AttendanceReportController extends Controller
         [$startDate, $endDate, $periodLabel] = $this->resolveMonthlyRange($request->input('month', 'current_month'));
         $scheduleEntry = $request->input('schedule_entry', '09:00');
         $tolerance = (int)$request->input('tolerance', 15);
+        $reportSlots = $request->has('report_slots') ? (int)$request->input('report_slots') : null;
 
         $reportData = $this->reportService->generatePeriodReport(
             $company,
@@ -117,7 +124,8 @@ class AttendanceReportController extends Controller
             $scheduleEntry,
             $tolerance,
             'monthly',
-            $periodLabel
+            $periodLabel,
+            $reportSlots
         );
 
         return response()->json([

@@ -14,8 +14,9 @@ class AttendanceReportService
     /**
      * Genera reporte diario de asistencia por empresa
      */
-    public function generateDailyReport(Company $company, Carbon $date, string $scheduleEntry = '09:00', int $tolerance = 15): array
+    public function generateDailyReport(Company $company, Carbon $date, string $scheduleEntry = '09:00', int $tolerance = 15, ?int $reportSlots = null): array
     {
+        $slots = $reportSlots ?? ($company->report_slots ?? 2);
         $dateStr = $date->format('Y-m-d');
         $isToday = $date->isToday();
         $now = Carbon::now();
@@ -47,7 +48,7 @@ class AttendanceReportService
                 ->orderBy('punch_time', 'asc')
                 ->get();
 
-            $punches = $this->map4DailyPunches($logs, $dateStr, $empScheduleEntry, $empTolerance, $holidayObj, $isSunday, $isToday, $now);
+            $punches = $this->map4DailyPunches($logs, $dateStr, $empScheduleEntry, $empTolerance, $holidayObj, $isSunday, $isToday, $now, $slots);
 
             if ($punches['total_punches'] > 0) {
                 $totalPresent++;
@@ -79,8 +80,10 @@ class AttendanceReportService
                 'name' => $company->name,
                 'code' => $company->code,
                 'intercompania' => $company->intercompania,
+                'report_slots' => $slots,
             ],
             'report_type' => 'daily',
+            'report_slots' => $slots,
             'date' => $dateStr,
             'is_today' => $isToday,
             'evaluated_at' => $now->format('Y-m-d H:i:s'),
@@ -97,8 +100,10 @@ class AttendanceReportService
     /**
      * Genera reporte quincenal o mensual de asistencia por empresa
      */
-    public function generatePeriodReport(Company $company, Carbon $startDate, Carbon $endDate, string $scheduleEntry = '09:00', int $tolerance = 15, string $reportType = 'quincenal', string $periodLabel = ''): array
+    public function generatePeriodReport(Company $company, Carbon $startDate, Carbon $endDate, string $scheduleEntry = '09:00', int $tolerance = 15, string $reportType = 'quincenal', string $periodLabel = '', ?int $reportSlots = null): array
     {
+        $slots = $reportSlots ?? ($company->report_slots ?? 2);
+
         // 1. Cargar festivos y horarios de departamento
         $holidays = $this->loadHolidays($company, $startDate, $endDate);
         $deptSchedules = $this->loadDeptSchedules($company);
@@ -143,7 +148,7 @@ class AttendanceReportService
                     ->orderBy('punch_time', 'asc')
                     ->get();
 
-                $punches = $this->map4DailyPunches($logs, $dayDate, $empScheduleEntry, $empTolerance, $holidayObj, $isSunday, $isToday, $now);
+                $punches = $this->map4DailyPunches($logs, $dayDate, $empScheduleEntry, $empTolerance, $holidayObj, $isSunday, $isToday, $now, $slots);
 
                 $totalWorkedSeconds += $punches['worked_seconds'];
 
@@ -186,8 +191,10 @@ class AttendanceReportService
                 'name' => $company->name,
                 'code' => $company->code,
                 'intercompania' => $company->intercompania,
+                'report_slots' => $slots,
             ],
             'report_type' => $reportType,
+            'report_slots' => $slots,
             'period_label' => $periodLabel,
             'start_date' => $startDate->format('Y-m-d'),
             'end_date' => $endDate->format('Y-m-d'),
@@ -197,9 +204,9 @@ class AttendanceReportService
     }
 
     /**
-     * Mapea las 4 marcaciones del día y calcula retardos y tiempo laborado al momento
+     * Mapea marcaciones del día (2 o 4 horarios según reportSlots) y calcula retardos
      */
-    public function map4DailyPunches($logs, string $dayDate, string $scheduleEntry, int $tolerance, ?CompanyHoliday $holiday = null, bool $isSunday = false, bool $isToday = false, ?Carbon $now = null): array
+    public function map4DailyPunches($logs, string $dayDate, string $scheduleEntry, int $tolerance, ?CompanyHoliday $holiday = null, bool $isSunday = false, bool $isToday = false, ?Carbon $now = null, int $reportSlots = 2): array
     {
         $result = [
             'entrada' => '-',
@@ -220,6 +227,7 @@ class AttendanceReportService
             'is_currently_working' => false,
             'holiday_description' => $holiday?->description,
             'delay_minutes' => 0,
+            'report_slots' => $reportSlots,
         ];
 
         if ($holiday) {
@@ -232,12 +240,32 @@ class AttendanceReportService
             return $result;
         }
 
-        // 1. Mapear marcaciones (Primer registro del día como entrada, último como salida)
+        // 1. Mapear marcaciones según reportSlots (2 o 4)
         $times = $logs->pluck('punch_time')->map(fn($t) => $t->format('H:i:s'))->toArray();
+        $count = count($times);
 
-        if (count($times) >= 1) {
-            $result['entrada'] = $times[0];
-            $result['salida'] = (count($times) > 1) ? end($times) : '-';
+        if ($reportSlots == 4) {
+            if ($count == 1) {
+                $result['entrada'] = $times[0];
+            } elseif ($count == 2) {
+                $result['entrada'] = $times[0];
+                $result['salida'] = $times[1];
+            } elseif ($count == 3) {
+                $result['entrada'] = $times[0];
+                $result['salida_comer'] = $times[1];
+                $result['entrada_comer'] = $times[2];
+            } elseif ($count >= 4) {
+                $result['entrada'] = $times[0];
+                $result['salida_comer'] = $times[1];
+                $result['entrada_comer'] = $times[2];
+                $result['salida'] = end($times);
+            }
+        } else {
+            // Modo 2 horas (Entrada Trabajo y Salida Trabajo únicamente)
+            if ($count >= 1) {
+                $result['entrada'] = $times[0];
+                $result['salida'] = ($count > 1) ? end($times) : '-';
+            }
         }
 
         // Formato 12 Horas

@@ -14,10 +14,12 @@ class Company extends Model
         'intercompania',
         'status',
         'report_emails',
+        'report_slots',
     ];
 
     protected $casts = [
         'report_emails' => 'array',
+        'report_slots' => 'integer',
     ];
 
     public function scopeByIntercompania($query, string $intercompania)
