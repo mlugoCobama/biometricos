@@ -145,28 +145,7 @@ class EmployeeController extends Controller
         $items = ($employees instanceof \Illuminate\Pagination\LengthAwarePaginator) ? $employees->getCollection() : $employees;
 
         $firstEmp = $items->first();
-        $companyId = $request->input('company_id') ?: ($firstEmp ? $firstEmp->company_id : null);
-        $intercompania = $request->input('intercompania') ?: ($firstEmp ? $firstEmp->intercompania : null);
-
-        // Resolver company_id desde la relación de empresa si no se obtuvo directamente
-        if (!$companyId && $intercompania) {
-            $company = Company::query()
-                ->where('intercompania', (string)$intercompania)
-                ->orWhere('code', (string)$intercompania)
-                ->first();
-            $companyId = $company?->id;
-        }
-
-        // Buscar el biométrico (device_id) asociado a la empresa / intercompañía
-        $deviceId = null;
-        if ($companyId || $intercompania) {
-            $device = Device::query()
-                ->when($companyId, fn($q) => $q->where('company_id', $companyId))
-                ->when(!$companyId && $intercompania, fn($q) => $q->where('intercompania', (string)$intercompania))
-                ->orderBy('id', 'asc')
-                ->first();
-            $deviceId = $device?->id;
-        }
+        $context = $this->resolveCompanyAndDeviceContext($request, $firstEmp);
 
         // Remover company_id e intercompania de cada elemento en el arreglo data
         $cleanItems = $items->map(function ($emp) {
@@ -185,20 +164,84 @@ class EmployeeController extends Controller
             $paginatedData['data'] = $cleanItems;
             return response()->json(array_merge([
                 'success' => true,
-                'company_id' => $companyId ? (int)$companyId : null,
-                'device_id' => $deviceId ? (int)$deviceId : null,
-                'intercompania' => $intercompania ? (string)$intercompania : null,
+                'company_id' => $context['company_id'],
+                'device_id' => $context['device_id'],
+                'intercompania' => $context['intercompania'],
             ], $paginatedData));
         }
 
         return response()->json([
             'success' => true,
-            'company_id' => $companyId ? (int)$companyId : null,
-            'device_id' => $deviceId ? (int)$deviceId : null,
-            'intercompania' => $intercompania ? (string)$intercompania : null,
+            'company_id' => $context['company_id'],
+            'device_id' => $context['device_id'],
+            'intercompania' => $context['intercompania'],
             'total' => count($cleanItems),
             'data' => $cleanItems,
         ]);
+    }
+
+    /**
+     * Resuelve company_id, device_id e intercompania desde la BD utilizando la relación real de tablas:
+     * companies -> id (relacionada con employees -> company_id)
+     * devices -> id (relacionada con devices -> company_id)
+     */
+    private function resolveCompanyAndDeviceContext(Request $request, $firstEmp): array
+    {
+        $company = null;
+
+        // 1. Intentar buscar por filtro de company_id
+        if ($request->has('company_id') && !empty($request->input('company_id'))) {
+            $val = $request->input('company_id');
+            $company = Company::query()
+                ->where('id', $val)
+                ->orWhere('intercompania', (string)$val)
+                ->orWhere('code', (string)$val)
+                ->first();
+        }
+
+        // 2. Intentar buscar por filtro de intercompania
+        if (!$company && $request->has('intercompania') && !empty($request->input('intercompania'))) {
+            $val = $request->input('intercompania');
+            $company = Company::query()
+                ->where('intercompania', (string)$val)
+                ->orWhere('code', (string)$val)
+                ->orWhere('id', $val)
+                ->first();
+        }
+
+        // 3. Fallback: Buscar la empresa desde el company_id del primer empleado resultante
+        if (!$company && $firstEmp && $firstEmp->company_id) {
+            $company = Company::find($firstEmp->company_id);
+        }
+
+        // 4. Fallback por campo intercompania del primer empleado si existe
+        if (!$company && $firstEmp && !empty($firstEmp->intercompania)) {
+            $company = Company::query()
+                ->where('intercompania', (string)$firstEmp->intercompania)
+                ->orWhere('code', (string)$firstEmp->intercompania)
+                ->first();
+        }
+
+        $companyId = $company ? (int)$company->id : ($firstEmp && $firstEmp->company_id ? (int)$firstEmp->company_id : null);
+        $intercompania = $company ? ($company->intercompania ?? $company->code) : ($firstEmp ? $firstEmp->intercompania : null);
+
+        // 5. Obtener el id del dispositivo biométrico (devices.id) relacionando devices.company_id = companies.id
+        $deviceId = null;
+        if ($companyId) {
+            $device = Device::where('company_id', $companyId)->orderBy('id', 'asc')->first();
+            $deviceId = $device ? (int)$device->id : null;
+        }
+
+        if (!$deviceId && $intercompania) {
+            $device = Device::where('intercompania', (string)$intercompania)->orderBy('id', 'asc')->first();
+            $deviceId = $device ? (int)$device->id : null;
+        }
+
+        return [
+            'company_id' => $companyId,
+            'device_id' => $deviceId,
+            'intercompania' => $intercompania ? (string)$intercompania : null,
+        ];
     }
 
     public function store(Request $request)
