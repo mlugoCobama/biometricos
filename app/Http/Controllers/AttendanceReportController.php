@@ -70,7 +70,7 @@ class AttendanceReportController extends Controller
             return response()->json(['success' => false, 'message' => 'Empresa/Intercompañía no encontrada'], 404);
         }
 
-        [$startDate, $endDate, $periodLabel] = $this->resolveQuincenalRange($request->input('period', 'current_quincena'));
+        [$startDate, $endDate, $periodLabel] = $this->resolveQuincenalRange($request);
         $scheduleEntry = $request->input('schedule_entry', '09:00');
         $tolerance = (int)$request->input('tolerance', 15);
         $reportSlots = $request->has('report_slots') ? (int)$request->input('report_slots') : null;
@@ -102,6 +102,10 @@ class AttendanceReportController extends Controller
             'intercompania' => 'required_without:company_id',
             'company_id' => 'required_without:intercompania',
             'month' => 'nullable|string',
+            'period' => 'nullable|string',
+            'start_date' => 'nullable|date_format:Y-m-d',
+            'end_date' => 'nullable|date_format:Y-m-d',
+            'year' => 'nullable|integer',
             'schedule_entry' => 'nullable|string',
             'tolerance' => 'nullable|integer',
             'report_slots' => 'nullable|integer|in:2,4',
@@ -112,7 +116,7 @@ class AttendanceReportController extends Controller
             return response()->json(['success' => false, 'message' => 'Empresa/Intercompañía no encontrada'], 404);
         }
 
-        [$startDate, $endDate, $periodLabel] = $this->resolveMonthlyRange($request->input('month', 'current_month'));
+        [$startDate, $endDate, $periodLabel] = $this->resolveMonthlyRange($request);
         $scheduleEntry = $request->input('schedule_entry', '09:00');
         $tolerance = (int)$request->input('tolerance', 15);
         $reportSlots = $request->has('report_slots') ? (int)$request->input('report_slots') : null;
@@ -194,13 +198,42 @@ class AttendanceReportController extends Controller
     }
 
     /**
-     * Resuelve rango de fechas quincenal
+     * Resuelve rango de fechas quincenal (actuales, anteriores o históricas)
      */
-    private function resolveQuincenalRange(string $periodOpt): array
+    private function resolveQuincenalRange(Request $request): array
     {
         $now = Carbon::now();
 
-        if ($periodOpt === 'current_quincena') {
+        // 1. Rango explícito con start_date y end_date
+        if ($request->filled('start_date') && $request->filled('end_date')) {
+            $startDate = Carbon::parse($request->input('start_date'))->startOfDay();
+            $endDate = Carbon::parse($request->input('end_date'))->endOfDay();
+            $label = "Rango Personalizado: " . $startDate->format('d/m/Y') . " al " . $endDate->format('d/m/Y');
+            return [$startDate, $endDate, $label];
+        }
+
+        // 2. Parámetros separados: year, month, quincena (1 o 2)
+        if ($request->filled('year') && $request->filled('month')) {
+            $year = (int)$request->input('year');
+            $month = (int)$request->input('month');
+            $quincena = (int)$request->input('quincena', 1);
+
+            if ($quincena === 2) {
+                $startDate = Carbon::createFromDate($year, $month, 16)->startOfDay();
+                $endDate = Carbon::createFromDate($year, $month, 1)->endOfMonth()->endOfDay();
+                $label = "2da Quincena de " . $this->reportService->getSpanishMonthName($month) . " {$year}";
+            } else {
+                $startDate = Carbon::createFromDate($year, $month, 1)->startOfDay();
+                $endDate = Carbon::createFromDate($year, $month, 15)->endOfDay();
+                $label = "1ra Quincena de " . $this->reportService->getSpanishMonthName($month) . " {$year}";
+            }
+            return [$startDate, $endDate, $label];
+        }
+
+        $periodOpt = (string)($request->input('period') ?: $request->input('quincena', 'current_quincena'));
+
+        // 3. Quincena actual
+        if ($periodOpt === 'current_quincena' || $periodOpt === '0') {
             if ($now->day <= 15) {
                 $startDate = $now->copy()->startOfMonth();
                 $endDate = $now->copy()->endOfDay();
@@ -210,18 +243,36 @@ class AttendanceReportController extends Controller
                 $endDate = $now->copy()->endOfDay();
                 $label = "2da Quincena de " . $this->reportService->getSpanishMonthName($now->month) . " {$now->year} (al día de hoy)";
             }
-        } elseif ($periodOpt === 'previous_quincena') {
-            if ($now->day <= 15) {
-                $prevMonth = $now->copy()->subMonth();
-                $startDate = $prevMonth->copy()->setDay(16)->startOfDay();
-                $endDate = $prevMonth->copy()->endOfMonth()->endOfDay();
-                $label = "2da Quincena de " . $this->reportService->getSpanishMonthName($prevMonth->month) . " {$prevMonth->year}";
-            } else {
-                $startDate = $now->copy()->startOfMonth();
-                $endDate = $now->copy()->setDay(15)->endOfDay();
-                $label = "1ra Quincena de " . $this->reportService->getSpanishMonthName($now->month) . " {$now->year}";
+            return [$startDate->startOfDay(), $endDate->endOfDay(), $label];
+        }
+
+        // 4. Quincena anterior o N quincenas atrás (ej: previous_quincena, -1, -2, -3)
+        if ($periodOpt === 'previous_quincena' || (is_numeric($periodOpt) && (int)$periodOpt < 0)) {
+            $stepsBack = is_numeric($periodOpt) ? abs((int)$periodOpt) : 1;
+            $currentDate = $now->copy();
+
+            for ($i = 0; $i < $stepsBack; $i++) {
+                if ($currentDate->day <= 15) {
+                    $currentDate->subMonth()->setDay(16);
+                } else {
+                    $currentDate->setDay(1);
+                }
             }
-        } elseif (preg_match('/^(\d{4})-(\d{2})-(Q1|Q2)$/i', $periodOpt, $matches)) {
+
+            if ($currentDate->day <= 15) {
+                $startDate = $currentDate->copy()->startOfMonth();
+                $endDate = $currentDate->copy()->setDay(15)->endOfDay();
+                $label = "1ra Quincena de " . $this->reportService->getSpanishMonthName($currentDate->month) . " {$currentDate->year}";
+            } else {
+                $startDate = $currentDate->copy()->setDay(16)->startOfDay();
+                $endDate = $currentDate->copy()->endOfMonth()->endOfDay();
+                $label = "2da Quincena de " . $this->reportService->getSpanishMonthName($currentDate->month) . " {$currentDate->year}";
+            }
+            return [$startDate->startOfDay(), $endDate->endOfDay(), $label];
+        }
+
+        // 5. Formato YYYY-MM-Q1 o YYYY-MM-Q2
+        if (preg_match('/^(\d{4})-(\d{1,2})-(Q1|Q2)$/i', $periodOpt, $matches)) {
             $year = (int)$matches[1];
             $month = (int)$matches[2];
             $q = strtoupper($matches[3]);
@@ -235,7 +286,11 @@ class AttendanceReportController extends Controller
                 $endDate = Carbon::createFromDate($year, $month, 1)->endOfMonth()->endOfDay();
                 $label = "2da Quincena de " . $this->reportService->getSpanishMonthName($month) . " {$year}";
             }
-        } else {
+            return [$startDate, $endDate, $label];
+        }
+
+        // 6. Formato de cualquier fecha YYYY-MM o YYYY-MM-DD
+        try {
             $date = Carbon::parse($periodOpt);
             if ($date->day <= 15) {
                 $startDate = $date->copy()->startOfMonth();
@@ -246,40 +301,77 @@ class AttendanceReportController extends Controller
                 $endDate = $date->copy()->endOfMonth()->endOfDay();
                 $label = "2da Quincena de " . $this->reportService->getSpanishMonthName($date->month) . " {$date->year}";
             }
+            return [$startDate->startOfDay(), $endDate->endOfDay(), $label];
+        } catch (\Exception $e) {
+            return $this->resolveQuincenalRange(new Request(['period' => 'current_quincena']));
         }
-
-        return [$startDate->startOfDay(), $endDate->endOfDay(), $label];
     }
 
     /**
-     * Resuelve rango de fechas mensual
+     * Resuelve rango de fechas mensual (actuales, anteriores o históricos)
      */
-    private function resolveMonthlyRange(string $monthOpt): array
+    private function resolveMonthlyRange(Request $request): array
     {
         $now = Carbon::now();
 
-        if ($monthOpt === 'current_month') {
+        // 1. Rango explícito con start_date y end_date
+        if ($request->filled('start_date') && $request->filled('end_date')) {
+            $startDate = Carbon::parse($request->input('start_date'))->startOfDay();
+            $endDate = Carbon::parse($request->input('end_date'))->endOfDay();
+            $label = "Mes Rango Personalizado: " . $startDate->format('d/m/Y') . " al " . $endDate->format('d/m/Y');
+            return [$startDate, $endDate, $label];
+        }
+
+        // 2. Parámetros separados: year y month
+        if ($request->filled('year') && $request->filled('month') && is_numeric($request->input('month'))) {
+            $year = (int)$request->input('year');
+            $month = (int)$request->input('month');
+
+            $startDate = Carbon::createFromDate($year, $month, 1)->startOfDay();
+            $endDate = Carbon::createFromDate($year, $month, 1)->endOfMonth()->endOfDay();
+            $label = "Mes de " . $this->reportService->getSpanishMonthName($month) . " {$year}";
+            return [$startDate, $endDate, $label];
+        }
+
+        $monthOpt = (string)($request->input('month') ?: $request->input('period', 'current_month'));
+
+        // 3. Mes actual
+        if ($monthOpt === 'current_month' || $monthOpt === '0') {
             $startDate = $now->copy()->startOfMonth()->startOfDay();
             $endDate = $now->copy()->endOfDay();
             $label = "Mes de " . $this->reportService->getSpanishMonthName($now->month) . " {$now->year} (al día de hoy)";
-        } elseif ($monthOpt === 'previous_month') {
-            $prev = $now->copy()->subMonth();
-            $startDate = $prev->copy()->startOfMonth()->startOfDay();
-            $endDate = $prev->copy()->endOfMonth()->endOfDay();
-            $label = "Mes de " . $this->reportService->getSpanishMonthName($prev->month) . " {$prev->year}";
-        } elseif (preg_match('/^(\d{4})-(\d{2})$/', $monthOpt, $matches)) {
+            return [$startDate, $endDate, $label];
+        }
+
+        // 4. Mes anterior o N meses atrás (ej: previous_month, -1, -2, -6, etc.)
+        if ($monthOpt === 'previous_month' || (is_numeric($monthOpt) && (int)$monthOpt < 0)) {
+            $monthsBack = is_numeric($monthOpt) ? abs((int)$monthOpt) : 1;
+            $target = $now->copy()->subMonths($monthsBack);
+            $startDate = $target->copy()->startOfMonth()->startOfDay();
+            $endDate = $target->copy()->endOfMonth()->endOfDay();
+            $label = "Mes de " . $this->reportService->getSpanishMonthName($target->month) . " {$target->year}";
+            return [$startDate, $endDate, $label];
+        }
+
+        // 5. Formato YYYY-MM
+        if (preg_match('/^(\d{4})-(\d{1,2})$/', $monthOpt, $matches)) {
             $year = (int)$matches[1];
             $month = (int)$matches[2];
             $startDate = Carbon::createFromDate($year, $month, 1)->startOfDay();
             $endDate = Carbon::createFromDate($year, $month, 1)->endOfMonth()->endOfDay();
             $label = "Mes de " . $this->reportService->getSpanishMonthName($month) . " {$year}";
-        } else {
+            return [$startDate, $endDate, $label];
+        }
+
+        // 6. Formato de cualquier fecha YYYY-MM-DD
+        try {
             $date = Carbon::parse($monthOpt);
             $startDate = $date->copy()->startOfMonth()->startOfDay();
             $endDate = $date->copy()->endOfMonth()->endOfDay();
             $label = "Mes de " . $this->reportService->getSpanishMonthName($date->month) . " {$date->year}";
+            return [$startDate, $endDate, $label];
+        } catch (\Exception $e) {
+            return $this->resolveMonthlyRange(new Request(['month' => 'current_month']));
         }
-
-        return [$startDate, $endDate, $label];
     }
 }

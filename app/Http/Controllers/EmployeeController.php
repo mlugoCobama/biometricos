@@ -475,17 +475,23 @@ class EmployeeController extends Controller
             return response()->json(['success' => false, 'message' => 'Empleado no encontrado'], 404);
         }
 
+        // Permitir tanto finger_index como finger_id por flexibilidad
+        if (!$request->has('finger_index') && $request->has('finger_id')) {
+            $request->merge(['finger_index' => $request->input('finger_id')]);
+        }
+
         $this->validate($request, [
             'finger_index' => 'required|integer|between:0,9',
-            'device_id' => 'required_without:template_data|exists:devices,id',
-            'template_data' => 'required_without:device_id|string',
+            'device_id' => 'nullable|exists:devices,id',
+            'intercompania' => 'nullable',
+            'template_data' => 'nullable|string',
             'template_version' => 'nullable|integer',
         ]);
 
         $fingerIndex = (int)$request->input('finger_index');
 
         // Mode A: Direct template save via API
-        if ($request->has('template_data')) {
+        if ($request->filled('template_data')) {
             $fp = EmployeeFingerprint::updateOrCreate(
                 [
                     'employee_id' => $employee->id,
@@ -507,12 +513,50 @@ class EmployeeController extends Controller
         }
 
         // Mode B: Trigger remote enrollment mode on biometric device
-        $device = Device::where('id', $request->input('device_id'))
-            ->where('company_id', $employee->company_id)
-            ->first();
+        $device = null;
+
+        // 1. Si se envía device_id explícitamente
+        if ($request->filled('device_id')) {
+            $device = Device::where('id', $request->input('device_id'))
+                ->where('company_id', $employee->company_id)
+                ->first();
+        }
+
+        // 2. Si se envía intercompania en lugar de device_id
+        if (!$device && $request->filled('intercompania')) {
+            $intercompania = (string)$request->input('intercompania');
+
+            // Buscar primero la empresa por intercompania / code / id para obtener su company_id real
+            $company = Company::query()
+                ->where('intercompania', $intercompania)
+                ->orWhere('code', $intercompania)
+                ->orWhere('id', $intercompania)
+                ->first();
+
+            if ($company) {
+                $device = Device::where('company_id', $company->id)->orderBy('id', 'asc')->first();
+            }
+
+            // Fallback directo en tabla devices por columna intercompania
+            if (!$device) {
+                $device = Device::where('intercompania', $intercompania)->orderBy('id', 'asc')->first();
+            }
+        }
+
+        // 3. Fallback automático usando el company_id o intercompania del propio empleado
+        if (!$device && $employee->company_id) {
+            $device = Device::where('company_id', $employee->company_id)->orderBy('id', 'asc')->first();
+        }
+
+        if (!$device && !empty($employee->intercompania)) {
+            $device = Device::where('intercompania', (string)$employee->intercompania)->orderBy('id', 'asc')->first();
+        }
 
         if (!$device) {
-            return response()->json(['success' => false, 'message' => 'Biométrico no válido para esta empresa'], 400);
+            return response()->json([
+                'success' => false,
+                'message' => 'No se encontró un biométrico válido para la intercompañía o empresa de este empleado'
+            ], 400);
         }
 
         $cmd = $this->pushService->queueEnrollFingerprintCommand($device, $employee->pin, $fingerIndex);
@@ -520,6 +564,8 @@ class EmployeeController extends Controller
         return response()->json([
             'success' => true,
             'message' => "Solicitud de enrolamiento remoto de huella enviada al biométrico '{$device->name}'",
+            'device_id' => $device->id,
+            'device_name' => $device->name,
             'data' => $cmd
         ]);
     }
