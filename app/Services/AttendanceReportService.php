@@ -422,4 +422,141 @@ class AttendanceReportService
         ];
         return $months[$month] ?? 'Mes';
     }
+
+    /**
+     * Genera el contenido CSV del reporte quincenal/mensual en memoria (con soporte para 2 o 4 marcaciones)
+     */
+    public function generatePeriodCsvString(Company $company, array $reportData, Carbon $startDate, Carbon $endDate): string
+    {
+        $fp = fopen('php://temp', 'r+');
+
+        // Header UTF-8 BOM para compatibilidad con Microsoft Excel
+        fprintf($fp, chr(0xEF) . chr(0xBB) . chr(0xBF));
+
+        $slots = $reportData['report_slots'] ?? ($company->report_slots ?? 2);
+        $employees = $reportData['employees'] ?? [];
+
+        // Renglón 1: Título principal
+        fputcsv($fp, ['Reporte de Asistencia x Sucursal']);
+
+        // Renglón 2 y 3: Rango de fechas
+        $startDayName = $this->getSpanishDayName($startDate->dayOfWeek);
+        $endDayName = $this->getSpanishDayName($endDate->dayOfWeek);
+        $startMonthName = strtolower($this->getSpanishMonthName($startDate->month));
+        $endMonthName = strtolower($this->getSpanishMonthName($endDate->month));
+
+        $desdeStr = "{$startDayName} {$startDate->day} {$startMonthName} {$startDate->year}";
+        $hastaStr = "{$endDayName} {$endDate->day} {$endMonthName} {$endDate->year}";
+
+        fputcsv($fp, ['Desde', $desdeStr]);
+        fputcsv($fp, ['Hasta', $hastaStr]);
+        fputcsv($fp, []); // Renglón en blanco
+
+        // Extraer la lista de días del periodo
+        $sampleEmp = $employees[0] ?? null;
+        $daysList = $sampleEmp ? array_values($sampleEmp['days']) : [];
+        if (empty($daysList)) {
+            $curr = $startDate->copy();
+            while ($curr->lte($endDate)) {
+                $daysList[] = ['date_str' => $curr->format('Y-m-d')];
+                $curr->addDay();
+            }
+        }
+
+        // Encabezado Renglón 5: Días del periodo
+        $headerDaysRow = ['', '', '']; // Espacios para Número, Nombre, Sucursal
+        foreach ($daysList as $d) {
+            $dayCarbon = Carbon::parse($d['date_str']);
+            $dDayName = strtolower($this->getSpanishDayName($dayCarbon->dayOfWeek));
+            $dMonthName = strtolower($this->getSpanishMonthName($dayCarbon->month));
+            $dayTitle = "{$dDayName} {$dayCarbon->day} {$dMonthName} {$dayCarbon->year}";
+
+            $headerDaysRow[] = $dayTitle;
+            if ($slots == 4) {
+                // 5 columnas por día: Entrada trabajo, Retardo, Salida comer, Entrada comer, Salida trabajo
+                $headerDaysRow[] = '';
+                $headerDaysRow[] = '';
+                $headerDaysRow[] = '';
+                $headerDaysRow[] = '';
+            } else {
+                // 3 columnas por día: Entrada trabajo, Retardo, Salida trabajo
+                $headerDaysRow[] = '';
+                $headerDaysRow[] = '';
+            }
+        }
+        fputcsv($fp, $headerDaysRow);
+
+        // Encabezado Renglón 6: Subcolumnas
+        $headerSubcolsRow = ['Número', 'Nombre', 'Sucursal'];
+        foreach ($daysList as $d) {
+            if ($slots == 4) {
+                $headerSubcolsRow[] = 'Entrada trabajo';
+                $headerSubcolsRow[] = 'Retardo';
+                $headerSubcolsRow[] = 'Salida comer';
+                $headerSubcolsRow[] = 'Entrada comer';
+                $headerSubcolsRow[] = 'Salida trabajo';
+            } else {
+                $headerSubcolsRow[] = 'Entrada trabajo';
+                $headerSubcolsRow[] = 'Retardo';
+                $headerSubcolsRow[] = 'Salida trabajo';
+            }
+        }
+        fputcsv($fp, $headerSubcolsRow);
+
+        // Renglones de los empleados
+        foreach ($employees as $emp) {
+            $row = [
+                $emp['pin'],
+                $emp['name'],
+                $company->name,
+            ];
+
+            foreach ($emp['days'] as $dayDate => $day) {
+                if ($day['is_sunday']) {
+                    $cols = ($slots == 4) ? 5 : 3;
+                    for ($i = 0; $i < $cols; $i++) {
+                        $row[] = 'DESCANSO';
+                    }
+                } elseif ($day['is_holiday']) {
+                    $cols = ($slots == 4) ? 5 : 3;
+                    for ($i = 0; $i < $cols; $i++) {
+                        $row[] = 'FESTIVO';
+                    }
+                } elseif ($day['total_punches'] === 0) {
+                    if ($slots == 4) {
+                        $row[] = '-';
+                        $row[] = '';
+                        $row[] = '-';
+                        $row[] = '-';
+                        $row[] = '-';
+                    } else {
+                        $row[] = '-';
+                        $row[] = '';
+                        $row[] = '-';
+                    }
+                } else {
+                    if ($slots == 4) {
+                        $row[] = ($day['entrada_12h'] !== '-') ? $day['entrada_12h'] : '-';
+                        $row[] = ($day['is_tardy']) ? 'Sí' : '';
+                        $row[] = ($day['salida_comer_12h'] !== '-') ? $day['salida_comer_12h'] : '-';
+                        $row[] = ($day['entrada_comer_12h'] !== '-') ? $day['entrada_comer_12h'] : '-';
+                        $row[] = ($day['salida_12h'] !== '-') ? $day['salida_12h'] : '-';
+                    } else {
+                        $row[] = ($day['entrada_12h'] !== '-') ? $day['entrada_12h'] : '-';
+                        $row[] = ($day['is_tardy']) ? 'Sí' : '';
+                        $row[] = ($day['salida_12h'] !== '-') ? $day['salida_12h'] : '-';
+                    }
+                }
+            }
+
+            fputcsv($fp, $row);
+        }
+
+        rewind($fp);
+        $csvContent = stream_get_contents($fp);
+        fclose($fp);
+
+        return $csvContent;
+    }
 }
+

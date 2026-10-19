@@ -54,7 +54,7 @@ class AttendanceReportController extends Controller
      * Reporte Quincenal de Asistencia por Empresa
      * GET /api/v1/reports/attendance/quincenal
      */
-    public function quincenal(Request $request): JsonResponse
+    public function quincenal(Request $request)
     {
         $this->validate($request, [
             'intercompania' => 'required_without:company_id',
@@ -63,6 +63,7 @@ class AttendanceReportController extends Controller
             'schedule_entry' => 'nullable|string',
             'tolerance' => 'nullable|integer',
             'report_slots' => 'nullable|integer|in:2,4',
+            'format' => 'nullable|string|in:json,csv',
         ]);
 
         $company = $this->resolveCompany($request);
@@ -86,6 +87,10 @@ class AttendanceReportController extends Controller
             $reportSlots
         );
 
+        if ($request->input('format') === 'csv') {
+            return $this->downloadPeriodCsvResponse($company, $reportData, $startDate, $endDate, 'quincenal');
+        }
+
         return response()->json([
             'success' => true,
             'data' => $reportData,
@@ -93,10 +98,20 @@ class AttendanceReportController extends Controller
     }
 
     /**
+     * Descargar Reporte Quincenal en CSV directamente
+     * GET /api/v1/reports/attendance/quincenal/csv
+     */
+    public function quincenalCsv(Request $request)
+    {
+        $request->merge(['format' => 'csv']);
+        return $this->quincenal($request);
+    }
+
+    /**
      * Reporte Mensual de Asistencia por Empresa
      * GET /api/v1/reports/attendance/monthly
      */
-    public function monthly(Request $request): JsonResponse
+    public function monthly(Request $request)
     {
         $this->validate($request, [
             'intercompania' => 'required_without:company_id',
@@ -109,6 +124,7 @@ class AttendanceReportController extends Controller
             'schedule_entry' => 'nullable|string',
             'tolerance' => 'nullable|integer',
             'report_slots' => 'nullable|integer|in:2,4',
+            'format' => 'nullable|string|in:json,csv',
         ]);
 
         $company = $this->resolveCompany($request);
@@ -132,10 +148,24 @@ class AttendanceReportController extends Controller
             $reportSlots
         );
 
+        if ($request->input('format') === 'csv') {
+            return $this->downloadPeriodCsvResponse($company, $reportData, $startDate, $endDate, 'mensual');
+        }
+
         return response()->json([
             'success' => true,
             'data' => $reportData,
         ]);
+    }
+
+    /**
+     * Descargar Reporte Mensual en CSV directamente
+     * GET /api/v1/reports/attendance/monthly/csv
+     */
+    public function monthlyCsv(Request $request)
+    {
+        $request->merge(['format' => 'csv']);
+        return $this->monthly($request);
     }
 
     /**
@@ -152,9 +182,19 @@ class AttendanceReportController extends Controller
      * Reporte Quincenal por Intercompañía (parámetro en URL)
      * GET /api/v1/companies/intercompania/{intercompania}/reports/quincenal
      */
-    public function quincenalByIntercompania(string $intercompania, Request $request): JsonResponse
+    public function quincenalByIntercompania(string $intercompania, Request $request)
     {
         $request->merge(['intercompania' => $intercompania]);
+        return $this->quincenal($request);
+    }
+
+    /**
+     * Descargar Reporte Quincenal en CSV por Intercompañía
+     * GET /api/v1/companies/intercompania/{intercompania}/reports/quincenal/csv
+     */
+    public function quincenalCsvByIntercompania(string $intercompania, Request $request)
+    {
+        $request->merge(['intercompania' => $intercompania, 'format' => 'csv']);
         return $this->quincenal($request);
     }
 
@@ -162,10 +202,38 @@ class AttendanceReportController extends Controller
      * Reporte Mensual por Intercompañía (parámetro en URL)
      * GET /api/v1/companies/intercompania/{intercompania}/reports/monthly
      */
-    public function monthlyByIntercompania(string $intercompania, Request $request): JsonResponse
+    public function monthlyByIntercompania(string $intercompania, Request $request)
     {
         $request->merge(['intercompania' => $intercompania]);
         return $this->monthly($request);
+    }
+
+    /**
+     * Descargar Reporte Mensual en CSV por Intercompañía
+     * GET /api/v1/companies/intercompania/{intercompania}/reports/monthly/csv
+     */
+    public function monthlyCsvByIntercompania(string $intercompania, Request $request)
+    {
+        $request->merge(['intercompania' => $intercompania, 'format' => 'csv']);
+        return $this->monthly($request);
+    }
+
+    /**
+     * Construye la respuesta HTTP para descarga directa del archivo CSV
+     */
+    private function downloadPeriodCsvResponse(Company $company, array $reportData, Carbon $startDate, Carbon $endDate, string $prefix = 'quincenal')
+    {
+        $csvContent = $this->reportService->generatePeriodCsvString($company, $reportData, $startDate, $endDate);
+        $intercompania = $company->intercompania ?? $company->code ?? $company->id;
+        $filename = "reporte_{$prefix}_{$intercompania}_" . $startDate->format('Ymd') . "_" . $endDate->format('Ymd') . ".csv";
+
+        return response($csvContent, 200, [
+            'Content-Type' => 'text/csv; charset=UTF-8',
+            'Content-Disposition' => "attachment; filename=\"{$filename}\"",
+            'Cache-Control' => 'no-cache, no-store, must-revalidate',
+            'Pragma' => 'no-cache',
+            'Expires' => '0',
+        ]);
     }
 
     /**
