@@ -77,6 +77,13 @@ $router->group(['prefix' => 'api/v1'], function ($router) {
     $router->post('/employees/{id}/enroll-fingerprint', 'EmployeeController@enrollFingerprint');
     $router->get('/employees/{id}/fingerprints', 'EmployeeController@fingerprints');
 
+    // Department Schedules & Tolerance Configuration
+    $router->get('/department-schedules', 'DepartmentScheduleController@index');
+    $router->post('/department-schedules', 'DepartmentScheduleController@store');
+    $router->put('/department-schedules/{id}', 'DepartmentScheduleController@update');
+    $router->delete('/department-schedules/{id}', 'DepartmentScheduleController@destroy');
+    $router->get('/companies/intercompania/{intercompania}/schedules', 'DepartmentScheduleController@getByIntercompania');
+
     // Attendance Logs & Statistics
     $router->get('/attendance-logs', 'AttendanceLogController@index');
     $router->get('/attendance-logs/stats', 'AttendanceLogController@stats');

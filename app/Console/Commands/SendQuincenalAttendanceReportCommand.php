@@ -414,12 +414,23 @@ class SendQuincenalAttendanceReportCommand extends Command
         // 3. Calcular Tiempo Laborado (Excluyendo comida)
         $workedSeconds = 0;
 
-        if ($result['entrada'] !== '-' && $result['salida_comer'] !== '-' && $result['entrada_comer'] !== '-' && $result['salida'] !== '-') {
-            $morningSeconds = Carbon::parse("{$dayDate} {$result['entrada']}")->diffInSeconds(Carbon::parse("{$dayDate} {$result['salida_comer']}"));
-            $afternoonSeconds = Carbon::parse("{$dayDate} {$result['entrada_comer']}")->diffInSeconds(Carbon::parse("{$dayDate} {$result['salida']}"));
+        if ($result['entrada'] !== '-' && count($times) >= 4) {
+            // Si hay 4 o más checadas reales en el día, toma salida_comer y entrada_comer reales
+            $tEntrada = Carbon::parse("{$dayDate} {$times[0]}");
+            $tSalidaComer = Carbon::parse("{$dayDate} {$times[1]}");
+            $tEntradaComer = Carbon::parse("{$dayDate} {$times[2]}");
+            $tSalida = Carbon::parse("{$dayDate} " . end($times));
+            $morningSeconds = $tEntrada->diffInSeconds($tSalidaComer);
+            $afternoonSeconds = $tEntradaComer->diffInSeconds($tSalida);
             $workedSeconds = max(0, $morningSeconds + $afternoonSeconds);
         } elseif ($result['entrada'] !== '-' && $result['salida'] !== '-') {
-            $workedSeconds = max(0, Carbon::parse("{$dayDate} {$result['entrada']}")->diffInSeconds(Carbon::parse("{$dayDate} {$result['salida']}")));
+            $rawSeconds = max(0, Carbon::parse("{$dayDate} {$result['entrada']}")->diffInSeconds(Carbon::parse("{$dayDate} {$result['salida']}")));
+            // Si la jornada supera las 5 horas, descontar 1 hora (3600s) de comida
+            if ($rawSeconds > (5 * 3600)) {
+                $workedSeconds = max(0, $rawSeconds - 3600);
+            } else {
+                $workedSeconds = $rawSeconds;
+            }
         }
 
         $result['worked_seconds'] = $workedSeconds;
@@ -501,11 +512,13 @@ class SendQuincenalAttendanceReportCommand extends Command
             $dMonthName = strtolower($this->getSpanishMonthName($dayCarbon->month));
             $dayTitle = "{$dDayName} {$dayCarbon->day} {$dMonthName} {$dayCarbon->year}";
 
-            // Se agregan 3 columnas por cada día (Entrada trabajo, Retardo, Salida trabajo)
+            // Se agregan 4 columnas por cada día (Entrada trabajo, Retardo, Salida trabajo, Horas laboradas)
             $headerDaysRow[] = $dayTitle;
             $headerDaysRow[] = '';
             $headerDaysRow[] = '';
+            $headerDaysRow[] = '';
         }
+        $headerDaysRow[] = 'Resumen';
         fputcsv($fp, $headerDaysRow);
 
         // Encabezado Renglón 6: Subcolumnas
@@ -514,7 +527,9 @@ class SendQuincenalAttendanceReportCommand extends Command
             $headerSubcolsRow[] = 'Entrada trabajo';
             $headerSubcolsRow[] = 'Retardo';
             $headerSubcolsRow[] = 'Salida trabajo';
+            $headerSubcolsRow[] = 'Horas laboradas';
         }
+        $headerSubcolsRow[] = 'Total Horas Periodo';
         fputcsv($fp, $headerSubcolsRow);
 
         // Renglones de los empleados
@@ -530,7 +545,9 @@ class SendQuincenalAttendanceReportCommand extends Command
                     $row[] = 'DESCANSO';
                     $row[] = 'DESCANSO';
                     $row[] = 'DESCANSO';
+                    $row[] = 'DESCANSO';
                 } elseif ($day['is_holiday']) {
+                    $row[] = 'FESTIVO';
                     $row[] = 'FESTIVO';
                     $row[] = 'FESTIVO';
                     $row[] = 'FESTIVO';
@@ -538,12 +555,16 @@ class SendQuincenalAttendanceReportCommand extends Command
                     $row[] = '-';
                     $row[] = '';
                     $row[] = '-';
+                    $row[] = '-';
                 } else {
                     $row[] = ($day['entrada_12h'] !== '-') ? $day['entrada_12h'] : '-';
                     $row[] = ($day['is_tardy']) ? 'Sí' : '';
                     $row[] = ($day['salida_12h'] !== '-') ? $day['salida_12h'] : '-';
+                    $row[] = $day['worked_time'] ?? '-';
                 }
             }
+
+            $row[] = $emp['total_worked_formatted'] ?? '-';
 
             fputcsv($fp, $row);
         }

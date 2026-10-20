@@ -249,9 +249,11 @@ class EmployeeController extends Controller
     {
         $this->validate($request, [
             'company_id' => 'required|exists:companies,id',
+            'intercompania' => 'nullable|string|max:50',
             'pin' => 'required|string',
             'first_name' => 'required|string|max:255',
             'last_name' => 'nullable|string|max:255',
+            'department' => 'nullable|string|max:100',
             'document_number' => 'nullable|string|max:50',
             'card_number' => 'nullable|string|max:50',
             'privilege' => 'nullable|integer|in:0,14',
@@ -272,9 +274,11 @@ class EmployeeController extends Controller
 
         $employee = Employee::create([
             'company_id' => $request->input('company_id'),
+            'intercompania' => $request->input('intercompania'),
             'pin' => $request->input('pin'),
             'first_name' => $request->input('first_name'),
             'last_name' => $request->input('last_name'),
+            'department' => $request->input('department'),
             'document_number' => $request->input('document_number'),
             'card_number' => $request->input('card_number'),
             'privilege' => $request->input('privilege', 0),
@@ -309,6 +313,7 @@ class EmployeeController extends Controller
             'employees.*.pin' => 'required|string',
             'employees.*.first_name' => 'required|string|max:255',
             'employees.*.last_name' => 'nullable|string|max:255',
+            'employees.*.department' => 'nullable|string|max:100',
             'employees.*.document_number' => 'nullable|string|max:50',
             'employees.*.card_number' => 'nullable|string|max:50',
             'employees.*.privilege' => 'nullable|integer|in:0,14',
@@ -330,6 +335,7 @@ class EmployeeController extends Controller
                 [
                     'first_name' => $empData['first_name'],
                     'last_name' => $empData['last_name'] ?? null,
+                    'department' => $empData['department'] ?? null,
                     'document_number' => $empData['document_number'] ?? null,
                     'card_number' => $empData['card_number'] ?? null,
                     'privilege' => $empData['privilege'] ?? 0,
@@ -379,6 +385,7 @@ class EmployeeController extends Controller
         $this->validate($request, [
             'first_name' => 'sometimes|required|string|max:255',
             'last_name' => 'nullable|string|max:255',
+            'department' => 'nullable|string|max:100',
             'document_number' => 'nullable|string|max:50',
             'card_number' => 'nullable|string|max:50',
             'privilege' => 'nullable|integer|in:0,14',
@@ -387,7 +394,7 @@ class EmployeeController extends Controller
         ]);
 
         $employee->update($request->only([
-            'first_name', 'last_name', 'document_number', 'card_number', 'privilege', 'password', 'status'
+            'first_name', 'last_name', 'department', 'document_number', 'card_number', 'privilege', 'password', 'status'
         ]));
 
         if ($request->boolean('sync_devices')) {

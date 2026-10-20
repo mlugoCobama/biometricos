@@ -39,7 +39,7 @@ class AttendanceReportService
 
         foreach ($employees as $emp) {
             // Resolver horario por departamento
-            [$empScheduleEntry, $empTolerance] = $this->resolveEmployeeSchedule($emp, $deptSchedules, $scheduleEntry, $tolerance);
+            [$empScheduleEntry, $empTolerance, $empMealMinutes] = $this->resolveEmployeeSchedule($emp, $deptSchedules, $scheduleEntry, $tolerance);
 
             // Consultar marcaciones del día
             $logs = AttendanceLog::query()
@@ -48,7 +48,7 @@ class AttendanceReportService
                 ->orderBy('punch_time', 'asc')
                 ->get();
 
-            $punches = $this->map4DailyPunches($logs, $dateStr, $empScheduleEntry, $empTolerance, $holidayObj, $isSunday, $isToday, $now, $slots);
+            $punches = $this->map4DailyPunches($logs, $dateStr, $empScheduleEntry, $empTolerance, $holidayObj, $isSunday, $isToday, $now, $slots, $empMealMinutes);
 
             if ($punches['total_punches'] > 0) {
                 $totalPresent++;
@@ -70,6 +70,8 @@ class AttendanceReportService
                 'tolerance_minutes' => $empTolerance,
                 'date' => $dateStr,
                 'day_name' => $this->getSpanishDayName($date->dayOfWeek),
+                'worked_time' => $punches['worked_time'],
+                'worked_seconds' => $punches['worked_seconds'],
                 'punches' => $punches,
             ];
         }
@@ -125,7 +127,7 @@ class AttendanceReportService
         $reportEmployees = [];
 
         foreach ($employees as $emp) {
-            [$empScheduleEntry, $empTolerance] = $this->resolveEmployeeSchedule($emp, $deptSchedules, $scheduleEntry, $tolerance);
+            [$empScheduleEntry, $empTolerance, $empMealMinutes] = $this->resolveEmployeeSchedule($emp, $deptSchedules, $scheduleEntry, $tolerance);
 
             $totalAssistances = 0;
             $totalTardiness = 0;
@@ -148,7 +150,7 @@ class AttendanceReportService
                     ->orderBy('punch_time', 'asc')
                     ->get();
 
-                $punches = $this->map4DailyPunches($logs, $dayDate, $empScheduleEntry, $empTolerance, $holidayObj, $isSunday, $isToday, $now, $slots);
+                $punches = $this->map4DailyPunches($logs, $dayDate, $empScheduleEntry, $empTolerance, $holidayObj, $isSunday, $isToday, $now, $slots, $empMealMinutes);
 
                 $totalWorkedSeconds += $punches['worked_seconds'];
 
@@ -204,9 +206,9 @@ class AttendanceReportService
     }
 
     /**
-     * Mapea marcaciones del día (2 o 4 horarios según reportSlots) y calcula retardos
+     * Mapea marcaciones del día (2 o 4 horarios según reportSlots) y calcula retardos y horas laboradas
      */
-    public function map4DailyPunches($logs, string $dayDate, string $scheduleEntry, int $tolerance, ?CompanyHoliday $holiday = null, bool $isSunday = false, bool $isToday = false, ?Carbon $now = null, int $reportSlots = 2): array
+    public function map4DailyPunches($logs, string $dayDate, string $scheduleEntry, int $tolerance, ?CompanyHoliday $holiday = null, bool $isSunday = false, bool $isToday = false, ?Carbon $now = null, int $reportSlots = 2, int $mealBreakMinutes = 60): array
     {
         $result = [
             'entrada' => '-',
@@ -290,9 +292,8 @@ class AttendanceReportService
             }
         }
 
-        // 3. Calcular Tiempo Laborado (Excluyendo comida y considerando el tiempo al momento si es HOY)
+        // 3. Calcular Tiempo Laborado (Descontando el tiempo de comida; en el día corriente sin salida final queda en '-')
         $workedSeconds = 0;
-        $nowTime = $now ?? Carbon::now();
 
         if ($result['entrada'] !== '-') {
             $tEntrada = Carbon::parse("{$dayDate} {$result['entrada']}");
@@ -300,26 +301,30 @@ class AttendanceReportService
             $tEntradaComer = ($result['entrada_comer'] !== '-') ? Carbon::parse("{$dayDate} {$result['entrada_comer']}") : null;
             $tSalida = ($result['salida'] !== '-') ? Carbon::parse("{$dayDate} {$result['salida']}") : null;
 
-            if ($tSalidaComer && $tEntradaComer && $tSalida) {
-                // Caso completo
+            // Si en modo 2 horas el empleado tiene 4 o más checadas reales en el día, podemos usar las checadas intermedias reales de comida
+            if ($reportSlots == 2 && $count >= 4) {
+                $tSalidaComerReal = Carbon::parse("{$dayDate} {$times[1]}");
+                $tEntradaComerReal = Carbon::parse("{$dayDate} {$times[2]}");
+                $mSecs = $tEntrada->diffInSeconds($tSalidaComerReal);
+                $aSecs = $tEntradaComerReal->diffInSeconds($tSalida);
+                $workedSeconds = max(0, $mSecs + $aSecs);
+            } elseif ($tSalidaComer && $tEntradaComer && $tSalida) {
+                // Caso completo con 4 marcaciones
                 $mSecs = $tEntrada->diffInSeconds($tSalidaComer);
                 $aSecs = $tEntradaComer->diffInSeconds($tSalida);
                 $workedSeconds = max(0, $mSecs + $aSecs);
-            } elseif ($tSalidaComer && $tEntradaComer && $isToday) {
-                // En curso por la tarde
-                $mSecs = $tEntrada->diffInSeconds($tSalidaComer);
-                $aSecs = $tEntradaComer->diffInSeconds($nowTime);
-                $workedSeconds = max(0, $mSecs + $aSecs);
-                $result['is_currently_working'] = true;
-            } elseif ($tSalidaComer) {
-                // Salió a comer
-                $workedSeconds = max(0, $tEntrada->diffInSeconds($tSalidaComer));
             } elseif ($tSalida) {
-                // Entrada y Salida final directa
-                $workedSeconds = max(0, $tEntrada->diffInSeconds($tSalida));
+                // Entrada y Salida final directa: descontar tiempo de comida si la jornada supera las 5 horas
+                $rawSeconds = max(0, $tEntrada->diffInSeconds($tSalida));
+                $mealSeconds = max(0, $mealBreakMinutes * 60);
+                if ($rawSeconds > (5 * 3600) && $rawSeconds > $mealSeconds) {
+                    $workedSeconds = $rawSeconds - $mealSeconds;
+                } else {
+                    $workedSeconds = $rawSeconds;
+                }
             } elseif ($isToday) {
-                // En curso por la mañana (al momento de la consulta)
-                $workedSeconds = max(0, $tEntrada->diffInSeconds($nowTime));
+                // Día corriente sin registro de salida final aún: no se calcula hasta que cierre su jornada
+                $workedSeconds = 0;
                 $result['is_currently_working'] = true;
             }
         }
@@ -380,16 +385,29 @@ class AttendanceReportService
     }
 
     /**
-     * Resuelve el horario oficial y tolerancia del empleado
+     * Resuelve el horario oficial, tolerancia y minutos de comida del empleado
      */
     private function resolveEmployeeSchedule(Employee $emp, array $deptSchedules, string $defaultScheduleEntry, int $defaultTolerance): array
     {
         $empDeptKey = strtolower(trim($emp->department ?? ''));
         if ($empDeptKey && isset($deptSchedules[$empDeptKey])) {
             $config = $deptSchedules[$empDeptKey];
-            return [substr($config->schedule_entry, 0, 5), (int)$config->tolerance_minutes];
+            $mealMinutes = 60;
+            if (!empty($config->meal_start) && !empty($config->meal_end)) {
+                try {
+                    $mStart = Carbon::parse($config->meal_start);
+                    $mEnd = Carbon::parse($config->meal_end);
+                    $diff = $mStart->diffInMinutes($mEnd);
+                    if ($diff > 0) {
+                        $mealMinutes = $diff;
+                    }
+                } catch (\Exception $e) {
+                    $mealMinutes = 60;
+                }
+            }
+            return [substr($config->schedule_entry, 0, 5), (int)$config->tolerance_minutes, $mealMinutes];
         }
-        return [$defaultScheduleEntry, $defaultTolerance];
+        return [$defaultScheduleEntry, $defaultTolerance, 60];
     }
 
     /**
@@ -424,7 +442,7 @@ class AttendanceReportService
     }
 
     /**
-     * Genera el contenido CSV del reporte quincenal/mensual en memoria (con soporte para 2 o 4 marcaciones)
+     * Genera el contenido CSV del reporte quincenal/mensual en memoria (con soporte para 2 o 4 marcaciones + Horas laboradas por día)
      */
     public function generatePeriodCsvString(Company $company, array $reportData, Carbon $startDate, Carbon $endDate): string
     {
@@ -473,17 +491,20 @@ class AttendanceReportService
 
             $headerDaysRow[] = $dayTitle;
             if ($slots == 4) {
-                // 5 columnas por día: Entrada trabajo, Retardo, Salida comer, Entrada comer, Salida trabajo
+                // 6 columnas por día: Entrada trabajo, Retardo, Salida comer, Entrada comer, Salida trabajo, Horas laboradas
+                $headerDaysRow[] = '';
                 $headerDaysRow[] = '';
                 $headerDaysRow[] = '';
                 $headerDaysRow[] = '';
                 $headerDaysRow[] = '';
             } else {
-                // 3 columnas por día: Entrada trabajo, Retardo, Salida trabajo
+                // 4 columnas por día: Entrada trabajo, Retardo, Salida trabajo, Horas laboradas
+                $headerDaysRow[] = '';
                 $headerDaysRow[] = '';
                 $headerDaysRow[] = '';
             }
         }
+        $headerDaysRow[] = 'Resumen';
         fputcsv($fp, $headerDaysRow);
 
         // Encabezado Renglón 6: Subcolumnas
@@ -495,12 +516,15 @@ class AttendanceReportService
                 $headerSubcolsRow[] = 'Salida comer';
                 $headerSubcolsRow[] = 'Entrada comer';
                 $headerSubcolsRow[] = 'Salida trabajo';
+                $headerSubcolsRow[] = 'Horas laboradas';
             } else {
                 $headerSubcolsRow[] = 'Entrada trabajo';
                 $headerSubcolsRow[] = 'Retardo';
                 $headerSubcolsRow[] = 'Salida trabajo';
+                $headerSubcolsRow[] = 'Horas laboradas';
             }
         }
+        $headerSubcolsRow[] = 'Total Horas Periodo';
         fputcsv($fp, $headerSubcolsRow);
 
         // Renglones de los empleados
@@ -513,12 +537,12 @@ class AttendanceReportService
 
             foreach ($emp['days'] as $dayDate => $day) {
                 if ($day['is_sunday']) {
-                    $cols = ($slots == 4) ? 5 : 3;
+                    $cols = ($slots == 4) ? 6 : 4;
                     for ($i = 0; $i < $cols; $i++) {
                         $row[] = 'DESCANSO';
                     }
                 } elseif ($day['is_holiday']) {
-                    $cols = ($slots == 4) ? 5 : 3;
+                    $cols = ($slots == 4) ? 6 : 4;
                     for ($i = 0; $i < $cols; $i++) {
                         $row[] = 'FESTIVO';
                     }
@@ -529,9 +553,11 @@ class AttendanceReportService
                         $row[] = '-';
                         $row[] = '-';
                         $row[] = '-';
+                        $row[] = '-';
                     } else {
                         $row[] = '-';
                         $row[] = '';
+                        $row[] = '-';
                         $row[] = '-';
                     }
                 } else {
@@ -541,13 +567,17 @@ class AttendanceReportService
                         $row[] = ($day['salida_comer_12h'] !== '-') ? $day['salida_comer_12h'] : '-';
                         $row[] = ($day['entrada_comer_12h'] !== '-') ? $day['entrada_comer_12h'] : '-';
                         $row[] = ($day['salida_12h'] !== '-') ? $day['salida_12h'] : '-';
+                        $row[] = $day['worked_time'] ?? '-';
                     } else {
                         $row[] = ($day['entrada_12h'] !== '-') ? $day['entrada_12h'] : '-';
                         $row[] = ($day['is_tardy']) ? 'Sí' : '';
                         $row[] = ($day['salida_12h'] !== '-') ? $day['salida_12h'] : '-';
+                        $row[] = $day['worked_time'] ?? '-';
                     }
                 }
             }
+
+            $row[] = $emp['total_worked_formatted'] ?? '-';
 
             fputcsv($fp, $row);
         }
